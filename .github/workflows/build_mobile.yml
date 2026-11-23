@@ -50,30 +50,20 @@ jobs:
         run: flutter pub get
 
       - name: Build Release APK
-        run: flutter build apk --release --verbose
-
-      - name: Upload Build Failure Logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Android-Build-Failure-Logs
-          path: |
-            build/app/outputs/logs/
-            ~/.gradle/daemon/
-          retention-days: 7
-
-      - name: Push Error Log to Debug Branch
-        if: failure()
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git checkout -B debug-log
-          mkdir -p ci-debug
-          cp ~/.gradle/daemon/*/*.log ci-debug/ 2>/dev/null || true
-          cp build/app/outputs/logs/* ci-debug/ 2>/dev/null || true
-          git add ci-debug
-          git commit -m "Capture CI build error logs" || true
-          git push -f origin debug-log || true
+          flutter build apk --release --verbose > build_apk.log 2>&1 || {
+            echo "Build failed! Pushing log to debug-log branch..."
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git checkout -B debug-log
+            cp build_apk.log ci-error.log
+            git add ci-error.log
+            git commit -m "Capture exact build error log"
+            git push -f origin debug-log
+            echo "=== LAST 150 LINES OF LOG ==="
+            tail -n 150 build_apk.log
+            exit 1
+          }
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
