@@ -31,17 +31,17 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Ensure Android Keystore exists
+      - name: Configure Flutter for Android SDK
         run: |
+          flutter config --no-analytics
+          flutter config --android-sdk "$ANDROID_HOME"
+          flutter config --jdk-dir "$JAVA_HOME"
           mkdir -p ~/.android
-          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Accept Android Licenses
-        run: |
-          yes | flutter doctor --android-licenses || true
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
           mkdir -p "$ANDROID_HOME/licenses" || true
           echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
           echo -e "\n84831b9409646a256e307309725c147e5ee19c5b" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          yes | flutter doctor --android-licenses || true
 
       - name: Ensure gradlew is executable
         run: chmod +x android/gradlew
@@ -55,15 +55,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Release APK
-        run: |
-          flutter build apk --release --verbose > build_apk.log 2>&1 || {
-            echo "Build failed!"
-            URL=$(curl -s --data-binary @build_apk.log https://paste.rs || echo "https://paste.rs/fail")
-            echo "::error title=BuildLog::Full log at $URL"
-            echo "=== BUILD LOG URL: $URL ==="
-            tail -n 120 build_apk.log
-            exit 1
-          }
+        run: flutter build apk --release
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
