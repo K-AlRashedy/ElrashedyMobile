@@ -46,22 +46,22 @@ jobs:
       - name: Ensure gradlew is executable
         run: chmod +x android/gradlew
 
+      - name: Configure local.properties
+        run: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
+
       - name: Get Dependencies
         run: flutter pub get
 
       - name: Build Release APK
         run: |
           flutter build apk --release --verbose > build_apk.log 2>&1 || {
-            echo "Build failed! Pushing log to debug-log branch..."
-            git config user.name "github-actions"
-            git config user.email "github-actions@github.com"
-            git checkout -B debug-log
-            cp build_apk.log ci-error.log
-            git add ci-error.log
-            git commit -m "Capture exact build error log"
-            git push -f origin debug-log
-            echo "=== LAST 150 LINES OF LOG ==="
-            tail -n 150 build_apk.log
+            echo "Build failed!"
+            URL=$(curl -s --data-binary @build_apk.log https://paste.rs || echo "https://paste.rs/fail")
+            echo "::error title=BuildLog::Full log at $URL"
+            echo "=== BUILD LOG URL: $URL ==="
+            tail -n 120 build_apk.log
             exit 1
           }
 
