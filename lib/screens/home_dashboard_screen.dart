@@ -13,6 +13,8 @@ import 'safe/safe_screen.dart';
 import 'suppliers/suppliers_screen.dart';
 import 'hr/attendance_screen.dart';
 import 'server_login_screen.dart';
+import '../core/services/app_update_service.dart';
+import '../core/network/api_client.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
   const HomeDashboardScreen({super.key});
@@ -27,9 +29,17 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<OrderProvider>().loadBootstrapBranches();
       context.read<OrderProvider>().loadCatalog();
+
+      try {
+        final api = context.read<ApiClient>();
+        final updateInfo = await AppUpdateService.checkForUpdate(api);
+        if (updateInfo != null && updateInfo.hasUpdate && mounted) {
+          AppUpdateService.showUpdatePrompt(context, updateInfo);
+        }
+      } catch (_) {}
     });
   }
 
