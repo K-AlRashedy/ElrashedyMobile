@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import '../constants/config.dart';
 
 class ApiException implements Exception {
   final String message;
@@ -14,7 +15,7 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
-  String _baseUrl = '';
+  String _baseUrl = AppConfig.defaultServerUrl;
   String? _token;
 
   String get baseUrl => _baseUrl;

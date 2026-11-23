@@ -37,7 +37,7 @@ class AuthProvider extends ChangeNotifier {
       final savedUrl = await _storage.getServerUrl();
       final savedToken = await _storage.getToken();
 
-      if (savedUrl == null || savedUrl.isEmpty || savedToken == null || savedToken.isEmpty) {
+      if (savedUrl.isEmpty || savedToken == null || savedToken.isEmpty) {
         _isLoading = false;
         notifyListeners();
         return false;

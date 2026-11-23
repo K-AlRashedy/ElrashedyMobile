@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/colors.dart';
+import '../core/constants/config.dart';
 import '../core/network/api_client.dart';
 import '../core/storage/secure_storage.dart';
 import '../providers/auth_provider.dart';
@@ -34,14 +35,12 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
   Future<void> _loadSavedData() async {
     final savedUrl = await _storage.getServerUrl();
     final savedUser = await _storage.getLastUsername();
-    if (savedUrl != null && savedUrl.isNotEmpty) {
-      _serverUrlController.text = savedUrl;
-      _testServerConnection(savedUrl);
-    } else {
-      // Default placeholder or local address
-      _serverUrlController.text = 'http://10.3.32.142:7000';
-      _testServerConnection('http://10.3.32.142:7000');
-    }
+    
+    // Default server is AppConfig.defaultServerUrl
+    final effectiveUrl = (savedUrl.isNotEmpty) ? savedUrl : AppConfig.defaultServerUrl;
+    _serverUrlController.text = effectiveUrl;
+    _testServerConnection(effectiveUrl);
+
     if (savedUser != null && savedUser.isNotEmpty) {
       _usernameController.text = savedUser;
     }
@@ -208,7 +207,7 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                             textAlign: TextAlign.start,
                             decoration: InputDecoration(
                               labelText: 'رابط السيرفر (Website Link)',
-                              hintText: 'https://alrashedy.com:8000',
+                              hintText: AppConfig.defaultServerUrl,
                               prefixIcon: const Icon(Icons.dns_rounded, color: AppColors.primary, size: 20),
                               suffixIcon: IconButton(
                                 icon: _isTestingPing
@@ -229,11 +228,48 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                               return null;
                             },
                             onChanged: (val) {
+                              setState(() {});
                               if (val.length > 8) {
                                 _testServerConnection(val);
                               }
                             },
                           ),
+
+                          // Option to restore default official URL if changed
+                          if (_serverUrlController.text.trim() != AppConfig.defaultServerUrl && _serverUrlController.text.trim().isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: InkWell(
+                                onTap: () {
+                                  setState(() {
+                                    _serverUrlController.text = AppConfig.defaultServerUrl;
+                                  });
+                                  _testServerConnection(AppConfig.defaultServerUrl);
+                                },
+                                borderRadius: BorderRadius.circular(8),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: const [
+                                      Icon(Icons.restore_rounded, size: 14, color: AppColors.primary),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'استعادة الرابط الرسمي الافتراضي',
+                                        style: TextStyle(
+                                          fontFamily: 'Cairo',
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
 
                           // Ping status indicator
                           if (_pingMessage != null) ...[

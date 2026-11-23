@@ -1,5 +1,6 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../constants/config.dart';
 
 class AppStorage {
   static const _keyToken = 'auth_token';
@@ -25,9 +26,13 @@ class AppStorage {
     await prefs.setString(_keyServerUrl, url);
   }
 
-  Future<String?> getServerUrl() async {
+  Future<String> getServerUrl() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_keyServerUrl);
+    final saved = prefs.getString(_keyServerUrl);
+    if (saved != null && saved.trim().isNotEmpty) {
+      return saved.trim();
+    }
+    return AppConfig.defaultServerUrl;
   }
 
   Future<void> saveLastUsername(String username) async {
