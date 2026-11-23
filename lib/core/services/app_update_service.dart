@@ -1,5 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../constants/colors.dart';
 import '../network/api_client.dart';
@@ -25,7 +29,7 @@ class AppUpdateInfo {
 }
 
 class AppUpdateService {
-  static const String currentVersion = "1.0.0";
+  static const String currentVersion = "1.0.1";
 
   /// Checks if a newer version is available on the server.
   static Future<AppUpdateInfo?> checkForUpdate(ApiClient api) async {
@@ -34,7 +38,8 @@ class AppUpdateService {
       if (res is Map<String, dynamic> && res['ok'] == true) {
         final latest = res['latest_version']?.toString() ?? currentVersion;
         final minV = res['min_version']?.toString() ?? currentVersion;
-        final notes = res['release_notes']?.toString() ?? 'تحسينات عامة على النظام.';
+        final notes =
+            res['release_notes']?.toString() ?? 'تحسينات عامة على النظام.';
         final aUrl = res['android_url']?.toString() ?? '';
         final iUrl = res['ios_url']?.toString() ?? '';
 
@@ -104,7 +109,8 @@ class AppUpdateService {
                   color: AppColors.primaryLight,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.system_update_rounded, color: AppColors.primary, size: 36),
+                child: const Icon(Icons.system_update_rounded,
+                    color: AppColors.primary, size: 36),
               ),
               const SizedBox(height: 14),
               Text(
@@ -141,20 +147,27 @@ class AppUpdateService {
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
                   minimumSize: const Size.fromHeight(48),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
-                onPressed: () async {
-                  if (downloadUrl.isNotEmpty) {
-                    final uri = Uri.parse(downloadUrl);
-                    if (await canLaunchUrl(uri)) {
-                      await launchUrl(uri, mode: LaunchMode.externalApplication);
-                    }
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  if (isIOS) {
+                    _launchExternalUrl(downloadUrl);
+                  } else {
+                    startInAppDownloadAndInstall(
+                        context, downloadUrl, info.latestVersion);
                   }
                 },
                 icon: Icon(isIOS ? Icons.apple_rounded : Icons.android_rounded),
                 label: Text(
-                  isIOS ? 'تحديث التطبيق للآيفون (IPA)' : 'تحديث وتنزيل التطبيق (APK) ⚡',
-                  style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold, fontSize: 13),
+                  isIOS
+                      ? 'تحديث التطبيق للآيفون (IPA)'
+                      : 'تحديث وتنزيل التطبيق (APK) ⚡',
+                  style: const TextStyle(
+                      fontFamily: 'Cairo',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13),
                 ),
               ),
               if (!info.forceUpdate) ...[
@@ -163,7 +176,8 @@ class AppUpdateService {
                   onPressed: () => Navigator.of(ctx).pop(),
                   child: const Text(
                     'تذكيري لاحقاً',
-                    style: TextStyle(fontFamily: 'Cairo', color: AppColors.textMuted),
+                    style: TextStyle(
+                        fontFamily: 'Cairo', color: AppColors.textMuted),
                   ),
                 ),
               ],
@@ -171,6 +185,303 @@ class AppUpdateService {
           ),
         );
       },
+    );
+  }
+
+  static Future<void> _launchExternalUrl(String url) async {
+    if (url.isNotEmpty) {
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    }
+  }
+
+  /// Downloads APK in-app with a live progress dialog and automatically launches Android installer.
+  static void startInAppDownloadAndInstall(
+      BuildContext context, String url, String targetVersion) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return _DownloadProgressDialog(
+          downloadUrl: url,
+          targetVersion: targetVersion,
+        );
+      },
+    );
+  }
+}
+
+class _DownloadProgressDialog extends StatefulWidget {
+  final String downloadUrl;
+  final String targetVersion;
+
+  const _DownloadProgressDialog({
+    required this.downloadUrl,
+    required this.targetVersion,
+  });
+
+  @override
+  State<_DownloadProgressDialog> createState() =>
+      _DownloadProgressDialogState();
+}
+
+class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
+  double _progress = 0.0;
+  int _receivedBytes = 0;
+  int _totalBytes = 0;
+  String _statusText = 'جاري الاتصال بالسيرفر...';
+  bool _isError = false;
+  String _errorMessage = '';
+  http.Client? _httpClient;
+  bool _isCancelled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _startDownload();
+  }
+
+  @override
+  void dispose() {
+    _isCancelled = true;
+    _httpClient?.close();
+    super.dispose();
+  }
+
+  Future<void> _startDownload() async {
+    try {
+      _httpClient = http.Client();
+      Uri currentUri = Uri.parse(widget.downloadUrl);
+
+      // Follow redirects manually up to 5 times (GitHub Releases -> S3)
+      http.StreamedResponse? streamedResponse;
+      int redirects = 0;
+      while (redirects < 5) {
+        final request = http.Request('GET', currentUri);
+        final response = await _httpClient!.send(request);
+
+        if (response.statusCode >= 300 &&
+            response.statusCode < 400 &&
+            response.headers.containsKey('location')) {
+          final location = response.headers['location']!;
+          currentUri = Uri.parse(location);
+          redirects++;
+          continue;
+        }
+
+        if (response.statusCode == 200) {
+          streamedResponse = response;
+          break;
+        } else {
+          throw Exception(
+              'خطأ في التحميل من السيرفر (كود: ${response.statusCode})');
+        }
+      }
+
+      if (streamedResponse == null) {
+        throw Exception('تعذر الوصول إلى رابط ملف التحديث');
+      }
+
+      final contentLength = streamedResponse.contentLength ?? 0;
+      setState(() {
+        _totalBytes = contentLength;
+        _statusText = 'جاري تنزيل ملف التحديث...';
+      });
+
+      // Prepare target file in app cache directory
+      final cacheDir = await getTemporaryDirectory();
+      final apkFile = File(
+          '${cacheDir.path}/ElrashedyERP_v${widget.targetVersion}.apk');
+      if (await apkFile.exists()) {
+        await apkFile.delete();
+      }
+
+      final sink = apkFile.openWrite();
+      await streamedResponse.stream.listen((chunk) {
+        if (_isCancelled) return;
+        sink.add(chunk);
+        _receivedBytes += chunk.length;
+        if (_totalBytes > 0) {
+          setState(() {
+            _progress = _receivedBytes / _totalBytes;
+          });
+        }
+      }).asFuture();
+
+      await sink.flush();
+      await sink.close();
+
+      if (_isCancelled) return;
+
+      // Also copy to public Download folder so it is accessible in user's APK files
+      try {
+        final publicDownloadDir = Directory('/sdcard/Download');
+        if (await publicDownloadDir.exists()) {
+          final publicFile = File(
+              '${publicDownloadDir.path}/ElrashedyERP_v${widget.targetVersion}.apk');
+          await apkFile.copy(publicFile.path);
+        }
+      } catch (_) {
+        // Fallback silently if Scoped Storage blocks raw /sdcard/Download
+      }
+
+      setState(() {
+        _statusText = 'اكتمل التنزيل! جاري فتح التثبيت...';
+        _progress = 1.0;
+      });
+
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      // Close download dialog
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+
+      // Launch native Android installer
+      await _installApk(apkFile.path);
+    } catch (e) {
+      if (!_isCancelled && mounted) {
+        setState(() {
+          _isError = true;
+          _errorMessage = e.toString().replaceFirst('Exception: ', '');
+          _statusText = 'فشل تنزيل التحديث';
+        });
+      }
+    }
+  }
+
+  Future<void> _installApk(String filePath) async {
+    try {
+      const platform = MethodChannel('com.alrashedy.erp/app_installer');
+      final res = await platform.invokeMethod('installApk', {
+        'filePath': filePath,
+      });
+
+      if (res == false) {
+        // App redirected to settings for unknown sources permission
+        debugPrint('Redirected to Unknown Sources settings');
+      }
+    } catch (e) {
+      debugPrint('Install APK error: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mbReceived = (_receivedBytes / (1024 * 1024)).toStringAsFixed(1);
+    final mbTotal = (_totalBytes / (1024 * 1024)).toStringAsFixed(1);
+
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _isError ? Colors.red.shade50 : AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              _isError ? Icons.error_outline : Icons.cloud_download_rounded,
+              color: _isError ? Colors.red : AppColors.primary,
+              size: 24,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _isError ? 'خطأ في التنزيل' : 'تحديث التطبيق تلقائياً',
+              style: const TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!_isError) ...[
+            Text(
+              _statusText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: _totalBytes > 0 ? _progress : null,
+                minHeight: 10,
+                backgroundColor: Colors.grey.shade200,
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(AppColors.primary),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _totalBytes > 0 ? '$mbReceived MB / $mbTotal MB' : '',
+                  style: const TextStyle(
+                    fontFamily: 'Cairo',
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+                Text(
+                  _totalBytes > 0
+                      ? '${(_progress * 100).toStringAsFixed(0)}%'
+                      : 'جاري التحميل...',
+                  style: const TextStyle(
+                    fontFamily: 'Cairo',
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ] else ...[
+            Text(
+              _errorMessage,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: 12,
+                color: Colors.red,
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            _isCancelled = true;
+            _httpClient?.close();
+            Navigator.of(context).pop();
+          },
+          child: Text(
+            _isError ? 'إغلاق' : 'إلغاء التنزيل',
+            style: const TextStyle(
+              fontFamily: 'Cairo',
+              color: AppColors.textMuted,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
