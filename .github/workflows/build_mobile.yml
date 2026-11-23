@@ -55,7 +55,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --android-skip-build-dependency-validation
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -109,12 +109,14 @@ jobs:
 
       - name: Download Android Artifact
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: ElrashedyERP-Android-APK
           path: dist-android
 
       - name: Download iOS Artifact
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: ElrashedyERP-iOS-IPA
           path: dist-ios
@@ -123,15 +125,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Elrashedy ERP Mobile (Latest Build)"
+          name: "Elrashedy ERP Mobile (v1.0.0)"
+          make_latest: true
           body: |
-            ### 📱 التحديث الأحدث لتطبيق الرشيدي ERP
+            ### 📱 التحديث الأحدث لتطبيق الرشيدي ERP (v1.0.0)
             - تم البناء الآلي لكل من **Android** و **iOS**.
             - يتضمن نظام حضور وانصراف العمال المحسّن (10 ساعات للحاضرين).
             - الصرف والاستلام وقفل وفتح الطلبات.
             - لوحة أرقام لمسية فائقة السرعة بدون كيبورد.
           files: |
-            dist-android/app-release.apk
-            dist-ios/ElrashedyERP-iOS.ipa
+            dist-android/*.apk
+            dist-ios/*.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

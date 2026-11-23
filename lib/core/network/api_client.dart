@@ -136,13 +136,15 @@ class ApiClient {
 
     try {
       final uri = Uri.parse('$cleaned/api/v1/ping/');
-      final res = await http.get(uri).timeout(const Duration(seconds: 5));
+      final res = await http.get(uri).timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) {
         final body = jsonDecode(utf8.decode(res.bodyBytes));
         return body is Map && body['ok'] == true;
       }
       return false;
-    } catch (_) {
+    } catch (e) {
+      // ignore: avoid_print
+      print('=== PING SERVER ERROR: $e for URL $cleaned ===');
       return false;
     }
   }
