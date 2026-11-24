@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/constants/colors.dart';
+import '../core/navigation/mobile_router.dart';
 import '../models/nav_item_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/order_provider.dart';
 import 'orders/create_order_screen.dart';
 import 'orders/orders_list_screen.dart';
 import 'products/products_catalog_screen.dart';
-import 'stock/stock_screen.dart';
-import 'sales/sales_screen.dart';
 import 'safe/safe_screen.dart';
-import 'suppliers/suppliers_screen.dart';
 import 'hr/attendance_screen.dart';
 import 'server_login_screen.dart';
 import '../core/services/app_update_service.dart';
@@ -44,126 +42,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   }
 
   void _handleItemTap(NavItemModel item) {
-    final url = item.url ?? '';
-    if (url == 'addorder' || url == 'transfer') {
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => CreateOrderScreen(
-            initialType: url == 'transfer' ? 'transfer' : 'order',
-          ),
-        ),
-      );
-    } else if (url == 'orders' || url == 'Rorders' || url == 'allorders' || url == 'ordersrev' || url == 'collection') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const OrdersListScreen()),
-      );
-    } else if (url == 'products' || url == 'RMproducts' || url == 'complete' || url == 'not_complete' || url == 'menu_sections') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const ProductsCatalogScreen()),
-      );
-    } else if (url == 'branchstocks' || url == 'stock' || url == 'stockentry' || url == 'itemsearch') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const StockScreen()),
-      );
-    } else if (url == 'selling_orders') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const SalesScreen()),
-      );
-    } else if (url == 'safe_pending_transactions' || url == 'add_cashin' || url == 'set_safe_balances' || url == 'expenses' || url == 'addexpense' || url == 'direct_advances') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const SafeScreen()),
-      );
-    } else if (url == 'supplier_receipts' || url == 'suppliers' || url == 'bills') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const SuppliersScreen()),
-      );
-    } else if (url == 'branch_attendance' || url == 'hr_dashboard' || url == 'payroll_list' || url == 'attendance' || url == 'leave_requests') {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const AttendanceScreen()),
-      );
-    } else {
-      _showModuleActionSheet(item);
-    }
-  }
-
-  void _showModuleActionSheet(NavItemModel item) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Icon(item.iconData, color: AppColors.primary, size: 24),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          style: const TextStyle(
-                            fontFamily: 'Cairo',
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                        const Text(
-                          'متصل بنظام الرشيدي ERP',
-                          style: TextStyle(
-                            fontFamily: 'Cairo',
-                            fontSize: 12,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceMuted,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Text(
-                  'لديك الصلاحية للوصول إلى هذا القسم. يمكنك متابعة العمليات أو استخدام الشاشات المخصصة على الموبايل.',
-                  style: TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 13,
-                    color: AppColors.textPrimary,
-                    height: 1.5,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('إغلاق'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+    MobileRouter.openNavItem(context, item);
   }
 
   void _showLogoutConfirmDialog() {

@@ -63,6 +63,8 @@ class OrderModel {
   final int toBranchId;
   final String toBranchName;
   final String status;
+  final String sendStatus;
+  final String receiveStatus;
   final String user;
   final int itemsCount;
   final List<OrderProductModel> items;
@@ -75,6 +77,8 @@ class OrderModel {
     required this.toBranchId,
     required this.toBranchName,
     required this.status,
+    required this.sendStatus,
+    required this.receiveStatus,
     required this.user,
     required this.itemsCount,
     required this.items,
@@ -93,6 +97,8 @@ class OrderModel {
       toBranchId: toMap['id'] as int? ?? 0,
       toBranchName: toMap['name'] as String? ?? '',
       status: json['status'] as String? ?? 'approved',
+      sendStatus: json['s_status'] as String? ?? json['status'] as String? ?? 'approved',
+      receiveStatus: json['r_status'] as String? ?? json['r_status_legacy'] as String? ?? 'approved',
       user: json['user'] as String? ?? '',
       itemsCount: json['items_count'] as int? ?? rawItems.length,
       items: rawItems

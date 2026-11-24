@@ -6,6 +6,7 @@ import '../../models/order_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/order_provider.dart';
 import '../../widgets/fast_quantity_dial_sheet.dart';
+import '../../widgets/product_avatar.dart';
 
 class CreateOrderScreen extends StatefulWidget {
   final String initialType; // 'order' or 'transfer'
@@ -48,28 +49,10 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     super.dispose();
   }
 
-  String _getProductEmoji(String name) {
-    if (name.contains('زيت')) return '🍾';
-    if (name.contains('سكر')) return '🧂';
-    if (name.contains('كريمة') || name.contains('كريم')) return '🧁';
-    if (name.contains('حليب') || name.contains('لبن')) return '🥛';
-    if (name.contains('دقيق')) return '🛍️';
-    if (name.contains('برتقال')) return '🍊';
-    if (name.contains('كعك') || name.contains('تورتة') || name.contains('كيك') || name.contains('تشيز')) return '🍰';
-    if (name.contains('شوكولات') || name.contains('شوكلت') || name.contains('جناش')) return '🍫';
-    if (name.contains('مانجو') || name.contains('مانجا')) return '🥭';
-    if (name.contains('ايس') || name.contains('أيس') || name.contains('جيلاتي')) return '🍦';
-    if (name.contains('فراولة')) return '🍓';
-    if (name.contains('عصير') || name.contains('عصاير')) return '🧃';
-    if (name.contains('جبنة') || name.contains('جبن')) return '🧀';
-    if (name.contains('بتنجان') || name.contains('باذنجان')) return '🍆';
-    if (name.contains('ليمون')) return '🍋';
-    return '📦';
-  }
-
   void _showBranchSelector(BuildContext context, bool isFrom) {
     final orderProvider = context.read<OrderProvider>();
     final auth = context.read<AuthProvider>();
+    final isTransfer = orderProvider.orderType == 'transfer';
 
     final branches = isFrom
         ? (auth.userBranches.isNotEmpty ? auth.userBranches : orderProvider.allDestinationBranches)
@@ -111,7 +94,9 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        isFrom ? 'تحديد الفرع الطالب (المُصدر)' : 'تحديد القسم / الجهة المستلمة',
+                        isFrom
+                            ? (isTransfer ? 'تحديد فرع الصرف (المصدر)' : 'تحديد الفرع الطالب (المستلم)')
+                            : (isTransfer ? 'تحديد فرع الاستلام (الوجهة)' : 'تحديد فرع الصرف (المصدر)'),
                         style: const TextStyle(
                           fontFamily: 'Cairo',
                           fontSize: 16,
@@ -293,10 +278,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                             ),
                             child: Row(
                               children: [
-                                Text(
-                                  _getProductEmoji(p.name),
-                                  style: const TextStyle(fontSize: 24),
-                                ),
+                                ProductAvatar(product: p, size: 38),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
@@ -587,13 +569,13 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Row(
+                          Row(
                             children: [
-                              Icon(Icons.storefront_rounded, size: 13, color: AppColors.textSecondary),
-                              SizedBox(width: 4),
+                              const Icon(Icons.storefront_rounded, size: 13, color: AppColors.textSecondary),
+                              const SizedBox(width: 4),
                               Text(
-                                'الفرع الطالب (المُصدر):',
-                                style: TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.textSecondary),
+                                isTransfer ? 'فرع الصرف (المصدر):' : 'الفرع الطالب (المستلم):',
+                                style: const TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.textSecondary),
                               ),
                             ],
                           ),
@@ -639,13 +621,13 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Row(
+                          Row(
                             children: [
-                              Icon(Icons.apartment_rounded, size: 13, color: AppColors.primary),
-                              SizedBox(width: 4),
+                              const Icon(Icons.apartment_rounded, size: 13, color: AppColors.primary),
+                              const SizedBox(width: 4),
                               Text(
-                                'القسم / المستلم:',
-                                style: TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.primary),
+                                isTransfer ? 'فرع الاستلام (الوجهة):' : 'فرع الصرف (المصدر):',
+                                style: const TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.primary),
                               ),
                             ],
                           ),
@@ -688,18 +670,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                           _searchFocusNode.unfocus();
                         },
                       )
-                    : IconButton(
-                        icon: const Icon(Icons.qr_code_scanner_rounded, color: AppColors.textSecondary, size: 20),
-                        tooltip: 'مسح الباركود',
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('جاهز لقراءة الباركود عبر الكاميرا أو جهاز المسح.', style: TextStyle(fontFamily: 'Cairo')),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        },
-                      ),
+                    : null,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 filled: true,
                 fillColor: Colors.white,
@@ -755,7 +726,6 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                   }
 
                   final prod = topProducts[i];
-                  final emoji = _getProductEmoji(prod.name);
                   final inCart = orderProvider.getQuantityForProduct(prod.id) > 0;
 
                   return ActionChip(
@@ -765,6 +735,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                       width: inCart ? 1.5 : 1,
                     ),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(100)),
+                    avatar: ProductAvatar(product: prod, size: 24),
                     label: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -778,7 +749,6 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                           ),
                         ),
                         const SizedBox(width: 6),
-                        Text(emoji, style: const TextStyle(fontSize: 14)),
                       ],
                     ),
                     onPressed: () {
@@ -843,10 +813,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
 
           return ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            leading: Text(
-              _getProductEmoji(prod.name),
-              style: const TextStyle(fontSize: 22),
-            ),
+            leading: ProductAvatar(product: prod, size: 34),
             title: Text(
               prod.name,
               style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, fontWeight: FontWeight.bold),
@@ -998,11 +965,11 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Row 1: Emoji + Name + Unit Badge + Delete
+              // Row 1: Avatar + Name + Unit Badge + Delete
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Text(_getProductEmoji(p.name), style: const TextStyle(fontSize: 22)),
+                  ProductAvatar(product: p, size: 40),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -1240,9 +1207,9 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                 Expanded(
                   child: Column(
                     children: [
-                      const Text(
-                        'الجهة المستلمة',
-                        style: TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.textSecondary),
+                      Text(
+                        isTransfer ? 'الجهة المستلمة' : 'الجهة الصارفة',
+                        style: const TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.textSecondary),
                       ),
                       Text(
                         toBranchName,

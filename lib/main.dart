@@ -11,12 +11,14 @@ import 'screens/splash_screen.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   final apiClient = ApiClient();
+  final authProvider = AuthProvider(apiClient);
+  apiClient.onUnauthorized = authProvider.expireSession;
 
   runApp(
     MultiProvider(
       providers: [
         Provider<ApiClient>.value(value: apiClient),
-        ChangeNotifierProvider(create: (_) => AuthProvider(apiClient)),
+        ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
         ChangeNotifierProvider(create: (_) => OrderProvider(apiClient)),
       ],
       child: const ElrashedyErpApp(),

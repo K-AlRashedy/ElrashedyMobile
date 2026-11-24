@@ -611,7 +611,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   Widget _buildWorkerCard(WorkerAttendanceState worker) {
     final isPresent = worker.status == 'present';
     final isAbsent = worker.status == 'absent';
-    final isLeave = worker.status == 'leave';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),

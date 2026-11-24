@@ -1,24 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../core/network/api_client.dart';
 import '../core/storage/secure_storage.dart';
-import '../models/user_model.dart';
-import '../models/nav_item_model.dart';
 import '../models/branch_model.dart';
+import '../models/nav_item_model.dart';
+import '../models/user_model.dart';
 
 class AuthProvider extends ChangeNotifier {
+  AuthProvider(this._api, {AppStorage? storage}) : _storage = storage ?? AppStorage();
+
   final ApiClient _api;
-  final AppStorage _storage = AppStorage();
+  final AppStorage _storage;
 
   UserModel? _user;
   String? _token;
   String _serverUrl = '';
   List<NavGroupModel> _navGroups = [];
   List<BranchModel> _userBranches = [];
-
   bool _isLoading = false;
   String? _errorMessage;
-
-  AuthProvider(this._api);
 
   UserModel? get user => _user;
   String? get token => _token;
@@ -29,55 +31,79 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
+  void _applySession(Map<String, dynamic> data, String token) {
+    final userData = data['user'];
+    if (userData is! Map<String, dynamic>) throw ApiException('بيانات المستخدم غير صالحة.');
+    _token = token;
+    _user = UserModel.fromJson(userData);
+    _api.setToken(token);
+    final rawNav = data['nav'] as List<dynamic>? ?? [];
+    _navGroups = rawNav.whereType<Map<String, dynamic>>().map(NavGroupModel.fromJson).toList();
+    final rawBranches = data['user_branches'] as List<dynamic>? ?? data['branches'] as List<dynamic>? ?? [];
+    _userBranches = rawBranches.whereType<Map<String, dynamic>>().map(BranchModel.fromJson).toList();
+  }
+
+  void _clearMemory() {
+    _token = null;
+    _user = null;
+    _navGroups = [];
+    _userBranches = [];
+    _api.setToken(null);
+  }
+
+  void expireSession() {
+    _clearMemory();
+    _errorMessage = 'انتهت جلسة العمل. يرجى تسجيل الدخول مجدداً.';
+    unawaited(_storage.clearToken());
+    notifyListeners();
+  }
+
   Future<bool> tryAutoLogin() async {
     _isLoading = true;
+    _errorMessage = null;
     notifyListeners();
-
     try {
       final savedUrl = await _storage.getServerUrl();
       final savedToken = await _storage.getToken();
-
-      if (savedUrl.isEmpty || savedToken == null || savedToken.isEmpty) {
-        _isLoading = false;
-        notifyListeners();
+      if (savedToken == null || savedToken.trim().isEmpty) {
+        _clearMemory();
         return false;
       }
-
       _serverUrl = savedUrl;
       _api.setBaseUrl(savedUrl);
       _api.setToken(savedToken);
-
-      // Verify token & fetch fresh bootstrap info
       final data = await _api.get('/api/v1/bootstrap/');
-      if (data is Map<String, dynamic>) {
-        _user = UserModel.fromJson(data['user'] as Map<String, dynamic>);
-        _token = savedToken;
-
-        final rawNav = data['nav'] as List<dynamic>? ?? [];
-        _navGroups = rawNav
-            .whereType<Map<String, dynamic>>()
-            .map((g) => NavGroupModel.fromJson(g))
-            .toList();
-
-        final rawBranches = data['user_branches'] as List<dynamic>? ?? [];
-        _userBranches = rawBranches
-            .whereType<Map<String, dynamic>>()
-            .map((b) => BranchModel.fromJson(b))
-            .toList();
-
-        _isLoading = false;
-        notifyListeners();
-        return true;
-      }
+      if (data is! Map<String, dynamic>) throw ApiException('استجابة غير متوقعة من السيرفر.');
+      _applySession(data, savedToken);
+      return true;
+    } on ApiException catch (error) {
+      _clearMemory();
+      if (error.isUnauthorized) await _storage.clearToken();
+      return false;
     } catch (_) {
-      // Auto-login failed, user will be prompted to login
+      _clearMemory();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
+  }
 
-    _token = null;
-    _user = null;
-    _isLoading = false;
-    notifyListeners();
-    return false;
+  Future<bool> refreshSession() async {
+    final token = _token;
+    if (token == null) return false;
+    try {
+      final data = await _api.get('/api/v1/bootstrap/');
+      if (data is! Map<String, dynamic>) return false;
+      _applySession(data, token);
+      notifyListeners();
+      return true;
+    } on ApiException catch (error) {
+      if (error.isUnauthorized) expireSession();
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<bool> login({
@@ -89,68 +115,49 @@ class AuthProvider extends ChangeNotifier {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
-
     try {
+      _api.setToken(null);
       _api.setBaseUrl(serverUrl);
-      final payload = {
+      final response = await _api.post('/api/v1/auth/login/', body: {
         'username': username.trim(),
         'password': password,
         'device_name': deviceName ?? 'تطبيق الرشيدي للموبايل',
-      };
-
-      final res = await _api.post('/api/v1/auth/login/', body: payload);
-
-      if (res is Map<String, dynamic>) {
-        final tokenStr = res['token'] as String;
-        _token = tokenStr;
-        _serverUrl = serverUrl;
-        _api.setToken(tokenStr);
-
-        _user = UserModel.fromJson(res['user'] as Map<String, dynamic>);
-
-        final rawNav = res['nav'] as List<dynamic>? ?? [];
-        _navGroups = rawNav
-            .whereType<Map<String, dynamic>>()
-            .map((g) => NavGroupModel.fromJson(g))
-            .toList();
-
-        final rawBranches = res['branches'] as List<dynamic>? ?? [];
-        _userBranches = rawBranches
-            .whereType<Map<String, dynamic>>()
-            .map((b) => BranchModel.fromJson(b))
-            .toList();
-
-        // Save session locally
-        await _storage.saveServerUrl(serverUrl);
-        await _storage.saveToken(tokenStr);
-        await _storage.saveLastUsername(username);
-
-        _isLoading = false;
-        notifyListeners();
-        return true;
-      }
-
-      throw ApiException('استجابة غير متوقعة من السيرفر.');
-    } catch (e) {
-      _errorMessage = e.toString();
+      });
+      if (response is! Map<String, dynamic>) throw ApiException('استجابة غير متوقعة من السيرفر.');
+      final token = response['token'];
+      if (token is! String || token.trim().isEmpty) throw ApiException('رمز الجلسة غير صالح.');
+      final normalizedUrl = _api.baseUrl;
+      await _storage.saveServerUrl(normalizedUrl);
+      await _storage.saveToken(token);
+      await _storage.saveLastUsername(username.trim());
+      _serverUrl = normalizedUrl;
+      _applySession(response, token);
+      _isLoading = false;
+      notifyListeners();
+      return true;
+    } catch (error) {
+      _api.setToken(null);
+      _errorMessage = error.toString();
       _isLoading = false;
       notifyListeners();
       return false;
     }
   }
 
+  Future<void> setServerUrl(String url) async {
+    final normalized = ApiClient.normalizeUrl(url);
+    _serverUrl = normalized;
+    _api.setBaseUrl(normalized);
+    await _storage.saveServerUrl(normalized);
+    notifyListeners();
+  }
+
   Future<void> logout() async {
     try {
-      if (_token != null) {
-        await _api.post('/api/v1/auth/logout/');
-      }
+      if (_token != null) await _api.post('/api/v1/auth/logout/');
     } catch (_) {}
-
-    _token = null;
-    _user = null;
-    _navGroups = [];
-    _userBranches = [];
-    _api.setToken(null);
+    _clearMemory();
+    _errorMessage = null;
     await _storage.clearToken();
     notifyListeners();
   }

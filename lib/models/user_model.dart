@@ -7,6 +7,8 @@ class UserModel {
   final int? branchId;
   final String branchName;
 
+  String get name => displayName.isNotEmpty ? displayName : username;
+
   UserModel({
     required this.id,
     required this.username,

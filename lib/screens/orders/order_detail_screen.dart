@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/colors.dart';
 import '../../core/network/api_client.dart';
 import '../../widgets/fast_quantity_dial_sheet.dart';
+import 'edit_order_screen.dart';
 
 class OrderDetailScreen extends StatefulWidget {
   final int orderId;
@@ -41,7 +42,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         });
       }
     } catch (e) {
-      _error = e.toString();
+      if (mounted) _error = e.toString();
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -241,14 +242,15 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     }
   }
 
-  Future<void> _unlockOrder() async {
+  Future<void> _unlockOrder(String side) async {
+    final title = side == 'send' ? 'إعادة فتح مرحلة الصرف؟' : 'إعادة فتح مرحلة الاستلام؟';
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text('إعادة فتح الطلب؟', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
+        title: Text(title, style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
         content: const Text(
-          'سيتم إعادة فتح الطلب وإلغاء القفل ليصبح متاحاً للتعديل والصرف والاستلام مجدداً.',
+          'سيتم إعادة فتح المرحلة المحددة لتكون متاحة للعمليات مجدداً.',
           style: TextStyle(fontFamily: 'Cairo'),
         ),
         actions: [
@@ -272,15 +274,58 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       final api = context.read<ApiClient>();
       final res = await api.post('/api/v1/orders/unlock/', body: {
         'order_id': widget.orderId,
+        'side': side,
       });
       if (res is Map<String, dynamic> && res['ok'] == true) {
         HapticFeedback.heavyImpact();
-        _loadOrderDetail();
+        await _loadOrderDetail();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('خطأ: $e', style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.danger),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessingAction = false);
+    }
+  }
+
+  Future<void> _deleteOrder() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('حذف الطلب؟', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
+        content: const Text(
+          'سيتم حذف الطلب وأصنافه نهائياً. لا يمكن التراجع عن هذا الإجراء.',
+          style: TextStyle(fontFamily: 'Cairo'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('إلغاء', style: TextStyle(fontFamily: 'Cairo'))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('حذف نهائي', style: TextStyle(fontFamily: 'Cairo', color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    setState(() => _isProcessingAction = true);
+    try {
+      final response = await context.read<ApiClient>().post(
+        '/api/v1/orders/delete/${widget.orderId}/',
+        body: const {},
+        idempotencyKey: 'order-delete-${widget.orderId}-${DateTime.now().millisecondsSinceEpoch}',
+      );
+      if (response is Map<String, dynamic> && response['ok'] == true && mounted) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $error', style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.danger),
         );
       }
     } finally {
@@ -350,8 +395,13 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     final perms = o['perms'] as Map<String, dynamic>? ?? {};
     final canDisburse = perms['can_disburse'] == true;
     final canReceive = perms['can_receive'] == true;
-    final canLock = perms['can_lock'] == true;
-    final canUnlock = perms['can_unlock'] == true;
+    final canCancelSent = perms['can_cancel_sent'] == true;
+    final canLockSend = perms['can_lock_send'] == true;
+    final canLockReceive = perms['can_lock_receive'] == true;
+    final canUnlockSend = perms['can_unlock_send'] == true;
+    final canUnlockReceive = perms['can_unlock_receive'] == true;
+    final canUpdate = perms['can_update'] == true;
+    final canDelete = perms['can_delete'] == true;
     final items = (o['items'] as List<dynamic>? ?? []).whereType<Map<String, dynamic>>().toList();
 
     final hasUndisbursed = items.any((i) => (i['sent'] as num?)?.toDouble() == 0.0);
@@ -371,6 +421,33 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
             )
           else
             IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'تحديث', onPressed: _loadOrderDetail),
+          if (canUpdate || canDelete)
+            PopupMenuButton<String>(
+              tooltip: 'إجراءات الطلب',
+              enabled: !_isProcessingAction,
+              onSelected: (action) async {
+                if (action == 'update') {
+                  final changed = await Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => EditOrderScreen(orderId: widget.orderId)),
+                  );
+                  if (changed == true && mounted) await _loadOrderDetail();
+                } else if (action == 'delete') {
+                  await _deleteOrder();
+                }
+              },
+              itemBuilder: (_) => [
+                if (canUpdate)
+                  const PopupMenuItem(
+                    value: 'update',
+                    child: Row(children: [Icon(Icons.edit_outlined, size: 19), SizedBox(width: 10), Text('تعديل الأصناف', style: TextStyle(fontFamily: 'Cairo'))]),
+                  ),
+                if (canDelete)
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Row(children: [Icon(Icons.delete_outline_rounded, size: 19, color: AppColors.danger), SizedBox(width: 10), Text('حذف الطلب', style: TextStyle(fontFamily: 'Cairo', color: AppColors.danger))]),
+                  ),
+              ],
+            ),
         ],
       ),
       body: SingleChildScrollView(
@@ -406,7 +483,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       ),
                       const Spacer(),
                       Text(
-                        dt,
+                        issuer.isNotEmpty ? '$issuer • $dt' : dt,
                         style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textSecondary),
                       ),
                     ],
@@ -522,56 +599,59 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 ),
               ),
 
-            // Secondary controls: Lock / Unlock
-            Row(
-              children: [
-                if (canLock && canDisburse && !isSendLocked)
-                  Expanded(
-                    child: OutlinedButton.icon(
+            if (canLockSend || canLockReceive || canUnlockSend || canUnlockReceive)
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (canLockSend && !isSendLocked)
+                    OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: AppColors.secondary),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.lock_outline_rounded, size: 16, color: AppColors.secondary),
                       label: const Text('قفل الصرف', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.secondary)),
                       onPressed: _isProcessingAction ? null : () => _lockOrder('send'),
                     ),
-                  ),
-                if (canLock && canDisburse && !isSendLocked && canLock && canReceive && !isReceiveLocked)
-                  const SizedBox(width: 8),
-                if (canLock && canReceive && !isReceiveLocked)
-                  Expanded(
-                    child: OutlinedButton.icon(
+                  if (canLockReceive && !isReceiveLocked && isSendLocked)
+                    OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: AppColors.secondary),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.lock_rounded, size: 16, color: AppColors.secondary),
                       label: const Text('قفل الاستلام', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.secondary)),
                       onPressed: _isProcessingAction ? null : () => _lockOrder('receive'),
                     ),
-                  ),
-                if ((isSendLocked || isReceiveLocked) && canUnlock) ...[
-                  if (canLock && ((canDisburse && !isSendLocked) || (canReceive && !isReceiveLocked)))
-                    const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
+                  if (canUnlockSend && isSendLocked)
+                    ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.warning,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.lock_open_rounded, size: 16),
-                      label: const Text('إعادة فتح الطلب 🔓', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
-                      onPressed: _isProcessingAction ? null : _unlockOrder,
+                      label: const Text('فتح الصرف', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: _isProcessingAction ? null : () => _unlockOrder('send'),
                     ),
-                  ),
+                  if (canUnlockReceive && isReceiveLocked)
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.warning,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: const Icon(Icons.lock_open_rounded, size: 16),
+                      label: const Text('فتح الاستلام', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+                      onPressed: _isProcessingAction ? null : () => _unlockOrder('receive'),
+                    ),
                 ],
-              ],
-            ),
+              ),
             const SizedBox(height: 16),
 
             // 3. Items Header
@@ -727,67 +807,60 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                       ],
 
                       // Item Action Buttons
-                      if ((canDisburse && !isSendLocked) || (canReceive && !isReceiveLocked)) ...[
+                      if ((canDisburse && !isSendLocked) ||
+                          (canReceive && !isReceiveLocked && isDisbursed && !isReceived) ||
+                          (canCancelSent && !isSendLocked && isDisbursed && !isReceived)) ...[
                         const Divider(height: 18, color: AppColors.border),
-                        Row(
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            // Disbursement Button (uses Fast Dialpad)
-                            if (canDisburse && !isSendLocked) ...[
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(vertical: 8),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    side: BorderSide(color: isDisbursed ? AppColors.textMuted : AppColors.primary),
-                                  ),
-                                  icon: const Icon(Icons.edit_note_rounded, size: 16),
-                                  label: Text(
-                                    isDisbursed ? 'تعديل الصرف (${sent.toStringAsFixed(sent.truncateToDouble() == sent ? 0 : 2)})' : 'صرف الكمية ⌨️',
-                                    style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold),
-                                  ),
-                                  onPressed: _isProcessingAction ? null : () => _openDialpadForDisburse(item),
+                            if (canDisburse && !isSendLocked && !isDisbursed) ...[
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  side: const BorderSide(color: AppColors.primary),
                                 ),
+                                icon: const Icon(Icons.edit_note_rounded, size: 16),
+                                label: const Text('صرف الكمية', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+                                onPressed: _isProcessingAction ? null : () => _openDialpadForDisburse(item),
                               ),
-                              if (!isDisbursed) ...[
-                                const SizedBox(width: 6),
-                                ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primary,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                  ),
-                                  onPressed: _isProcessingAction ? null : () => _disburseItem(item['id'] as int, requested),
-                                  child: const Text('كل المطلوب', style: TextStyle(fontFamily: 'Cairo', fontSize: 11, fontWeight: FontWeight.bold)),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                 ),
-                              ],
-                              if (isDisbursed && !isReceived) ...[
-                                const SizedBox(width: 6),
-                                IconButton(
-                                  icon: const Icon(Icons.undo_rounded, color: AppColors.danger, size: 20),
-                                  tooltip: 'إلغاء الصرف',
-                                  onPressed: _isProcessingAction ? null : () => _cancelSent(item['id'] as int),
-                                ),
-                              ],
-                            ],
-
-                            // Receiving Button
-                            if (canReceive && !isReceiveLocked && isDisbursed && !isReceived) ...[
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.info,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(vertical: 8),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                  ),
-                                  icon: const Icon(Icons.check_rounded, size: 16),
-                                  label: const Text('تأكيد الاستلام ✓', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
-                                  onPressed: _isProcessingAction ? null : () => _receiveItem(itemId: item['id'] as int),
-                                ),
+                                onPressed: _isProcessingAction ? null : () => _disburseItem(item['id'] as int, requested),
+                                child: const Text('كل المطلوب', style: TextStyle(fontFamily: 'Cairo', fontSize: 11, fontWeight: FontWeight.bold)),
                               ),
                             ],
+                            if (canCancelSent && !isSendLocked && isDisbursed && !isReceived)
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: AppColors.danger,
+                                  side: const BorderSide(color: AppColors.danger),
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                icon: const Icon(Icons.undo_rounded, size: 16),
+                                label: const Text('إلغاء الصرف وإرجاع الكمية', style: TextStyle(fontFamily: 'Cairo', fontSize: 11, fontWeight: FontWeight.bold)),
+                                onPressed: _isProcessingAction ? null : () => _cancelSent(item['id'] as int),
+                              ),
+                            if (canReceive && !isReceiveLocked && isDisbursed && !isReceived)
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.info,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                icon: const Icon(Icons.check_rounded, size: 16),
+                                label: const Text('تأكيد الاستلام', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+                                onPressed: _isProcessingAction ? null : () => _receiveItem(itemId: item['id'] as int),
+                              ),
                           ],
                         ),
                       ],

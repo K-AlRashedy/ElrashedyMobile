@@ -1,7 +1,7 @@
 name: elrashedy_erp
 description: "Al Rashedy ERP Mobile — Smart, optimized ERP companion for mobile devices."
 publish_to: "none"
-version: 1.0.1+2
+version: 1.1.0+3
 
 environment:
   sdk: ^3.13.7
