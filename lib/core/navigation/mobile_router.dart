@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../../models/nav_item_model.dart';
-import '../../providers/auth_provider.dart';
 import '../../screens/admin/admin_users_screen.dart';
 import '../../screens/admin/data_console_screen.dart';
+import '../../screens/catalog/master_data_screen.dart';
 import '../../screens/delivery/delivery_customers_screen.dart';
 import '../../screens/delivery/delivery_zones_screen.dart';
 import '../../screens/expenses/expenses_screen.dart';
@@ -18,7 +17,6 @@ import '../../screens/manufacturing/manufacturing_screen.dart';
 import '../../screens/orders/create_order_screen.dart';
 import '../../screens/orders/order_collection_screen.dart';
 import '../../screens/orders/orders_list_screen.dart';
-import '../../screens/pos/pos_screen.dart';
 import '../../screens/products/products_catalog_screen.dart';
 import '../../screens/reports/reports_hub_screen.dart';
 import '../../screens/safe/safe_screen.dart';
@@ -28,130 +26,210 @@ import '../../screens/stock/stock_screen.dart';
 import '../../screens/suppliers/suppliers_screen.dart';
 
 class MobileRouter {
-  static Future<dynamic> openNavItem(BuildContext context, NavItemModel item) {
-    final url = item.url ?? '';
-    Widget? destination;
+  static Widget? resolveScreen(NavItemModel item) {
+    final url = (item.url ?? '').trim();
+    final href = (item.href ?? '').trim();
+
     switch (url) {
-      // POS & Cashier
-      case 'pos':
-        destination = const POSScreen();
+      // App Downloads
+      case 'mobile_app_download':
+      case 'mobile_app_download_android':
+      case 'mobile_app_download_android_arm64':
+      case 'mobile_app_download_ios':
+        return const SettingsScreen();
 
       // Delivery
       case 'delivery_zones':
+        return const DeliveryZonesScreen();
       case 'add_delivery_zone':
-        destination = const DeliveryZonesScreen();
+        return const DeliveryZonesScreen(openCreate: true);
       case 'delivery_customers':
-        destination = const DeliveryCustomersScreen();
+        return const DeliveryCustomersScreen();
 
       // Orders
       case 'addorder':
-        destination = const CreateOrderScreen(initialType: 'order');
+        return const CreateOrderScreen(initialType: 'order');
       case 'transfer':
-        destination = const CreateOrderScreen(initialType: 'transfer');
+        return const CreateOrderScreen(initialType: 'transfer');
       case 'orders':
-        destination = const OrdersListScreen(direction: 'outgoing', title: 'طلبات الصرف');
+        return const OrdersListScreen(direction: 'outgoing', title: 'طلبات الصرف');
       case 'Rorders':
-        destination = const OrdersListScreen(direction: 'incoming', title: 'طلبات الاستلام');
+        return const OrdersListScreen(direction: 'incoming', title: 'طلبات الاستلام');
       case 'ordersrev':
-        destination = const OrdersListScreen(direction: 'review', title: 'مراجعة الطلبات');
+        return const OrdersListScreen(direction: 'review', title: 'مراجعة الطلبات');
       case 'allorders':
-        destination = const OrdersListScreen(direction: 'all', title: 'جميع الطلبات');
+        return const OrdersListScreen(direction: 'all', title: 'جميع الطلبات');
       case 'collection':
-        destination = const OrderCollectionScreen();
+        return const OrderCollectionScreen();
 
-      // Catalog & Products
+      // Catalog, BOM, Menu Sections & Excel Import/Export
       case 'products':
-      case 'RMproducts':
-      case 'complete':
-      case 'not_complete':
-      case 'menu_sections':
+        return const ProductsCatalogScreen(initialTab: 0);
       case 'addproduct':
+        return const ProductsCatalogScreen(initialTab: 0, initialAction: 'add_product');
+      case 'excel':
+        return const ProductsCatalogScreen(initialTab: 0, initialAction: 'export');
+      case 'upload':
+        return const ProductsCatalogScreen(initialTab: 0, initialAction: 'import');
+      case 'RMproducts':
+        return const ProductsCatalogScreen(initialTab: 1);
+      case 'complete':
+        return const ProductsCatalogScreen(initialTab: 2);
+      case 'not_complete':
+        return const ProductsCatalogScreen(initialTab: 3);
+      case 'menu_sections':
+        return const ProductsCatalogScreen(initialTab: 4);
       case 'add_menu_section':
-        destination = const ProductsCatalogScreen();
+        return const ProductsCatalogScreen(initialTab: 4, initialAction: 'add_section');
 
-      // Stock
+      // Master Data: Units, Branches, Store Types, Chart of Accounts
+      case 'units':
+        return const MasterDataScreen(initialTab: 0);
+      case 'addunit':
+        return const MasterDataScreen(initialTab: 0, openCreate: true);
+      case 'branches':
+      case 'getBranches':
+        return const MasterDataScreen(initialTab: 1);
+      case 'addbranch':
+        return const MasterDataScreen(initialTab: 1, openCreate: true);
+      case 'stores':
+        return const MasterDataScreen(initialTab: 2);
+      case 'addstoretype':
+        return const MasterDataScreen(initialTab: 2, openCreate: true);
+      case 'accounts':
+        return const MasterDataScreen(initialTab: 3);
+      case 'addaccount':
+        return const MasterDataScreen(initialTab: 3, openCreate: true);
+
+      // Stock & Daily Reports
       case 'branchstocks':
       case 'stock':
-      case 'stockentry':
       case 'itemsearch':
+        return const StockScreen(initialTab: 0);
       case 'daily_Report':
-        destination = const StockScreen();
+        return const StockScreen(initialTab: 1);
+      case 'stockentry':
+        return const StockScreen(initialTab: 2);
 
       // Sales
       case 'selling_orders':
-        destination = const SalesScreen();
+        return const SalesScreen();
+      case 'sell':
+        return const SalesScreen(openCreate: true);
 
       // Safe & Treasury
       case 'safe_pending_transactions':
+        return const SafeScreen(initialTab: 0);
       case 'add_cashin':
-      case 'set_safe_balances':
+        return const SafeScreen(initialTab: 0, initialAction: 'add_cashin');
       case 'direct_advances':
-        destination = const SafeScreen();
+        return const SafeScreen(initialTab: 1);
+      case 'set_safe_balances':
+        return const SafeScreen(initialTab: 2, initialAction: 'set_balances');
 
       // Expenses
       case 'expenses':
+        return const ExpensesScreen();
       case 'addexpense':
-        destination = const ExpensesScreen();
+        return const ExpensesScreen(openCreate: true);
 
       // Purchases & Suppliers
-      case 'supplier_receipts':
       case 'suppliers':
+      case 'getSuppliers':
+        return const SuppliersScreen(initialTab: 0);
+      case 'addsupplier':
+        return const SuppliersScreen(initialTab: 0, initialAction: 'add_supplier');
       case 'suppliers_with_balance':
+        return const SuppliersScreen(initialTab: 0, withBalanceOnly: true);
       case 'bills':
+      case 'updatebill':
+        return const SuppliersScreen(initialTab: 1);
       case 'addbill':
+        return const SuppliersScreen(initialTab: 1, initialAction: 'add_bill');
+      case 'supplier_receipts':
+      case 'print_all_receipts':
+        return const SuppliersScreen(initialTab: 2);
       case 'operations':
-        destination = const SuppliersScreen();
+        return const SuppliersScreen(initialTab: 3);
 
       // Manufacturing
       case 'manufacturing':
+        return const ManufacturingScreen(openCreate: true);
       case 'manufactureProcess':
-        destination = const ManufacturingScreen();
+        return const ManufacturingScreen();
 
       // HR & Personnel
       case 'hr_dashboard':
-        destination = const HRDashboardScreen();
+        return const HRDashboardScreen();
       case 'employees_list':
-        destination = const EmployeesScreen();
-      case 'attendance':
+        return const EmployeesScreen();
+      case 'add_employee':
+        return const EmployeesScreen(openCreate: true);
       case 'branch_attendance':
-        destination = const AttendanceScreen();
+        return const AttendanceScreen();
+      case 'attendance':
+        return const AttendanceScreen(openRecordsSheet: true);
       case 'leave_requests':
-        destination = const LeaveRequestsScreen();
+      case 'add_leave':
+        return const LeaveRequestsScreen();
       case 'penalties_list':
-        destination = const PenaltiesScreen();
+        return const PenaltiesScreen();
       case 'payroll_list':
-        destination = const PayrollScreen();
+      case 'generate_payroll':
+        return const PayrollScreen();
 
-      // Reports & BI
-      case 'branch_reports':
+      // Reports, Dashboard & Costing
+      case 'index':
       case 'dashboard':
+        return const ReportsHubScreen(initialTab: 0);
+      case 'branch_reports':
+        return const ReportsHubScreen(initialTab: 1);
+      case 'last_month_expenses':
+      case 'branches_expenses':
+        return const ReportsHubScreen(
+          initialTab: 1,
+          initialBranchReportType: 'expenses',
+        );
+      case 'branches_sales':
+      case 'monthly_branches_sales':
+        return const ReportsHubScreen(
+          initialTab: 1,
+          initialBranchReportType: 'sales',
+        );
       case 'costanalysis':
+        return const ReportsHubScreen(initialTab: 2);
       case 'indirectCost':
-        destination = const ReportsHubScreen();
+        return const ReportsHubScreen(initialTab: 3);
 
       // Administration & Settings
+      case 'users':
       case 'users_list':
       case 'admin_users':
-        destination = const AdminUsersScreen();
+        return const AdminUsersScreen();
+      case 'signup':
+        return const AdminUsersScreen(openCreate: true);
       case 'data_console':
-        destination = const DataConsoleScreen();
+        return const DataConsoleScreen();
       case 'settings':
-        destination = const SettingsScreen();
+        return const SettingsScreen();
     }
 
-    if (destination != null) {
-      final screen = destination;
-      return Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+    if (href.contains('/mobile-app')) {
+      return const SettingsScreen();
     }
-    final auth = context.read<AuthProvider>();
-    if (item.href != null && item.href!.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${item.title} متاح من متصفح النظام على ${auth.serverUrl}', style: const TextStyle(fontFamily: 'Cairo'))),
-      );
-      return Future<dynamic>.value();
+
+    return null;
+  }
+
+  static Future<dynamic> openNavItem(BuildContext context, NavItemModel item) {
+    final destination = resolveScreen(item);
+    if (destination != null) {
+      return Navigator.of(context).push(MaterialPageRoute(builder: (_) => destination));
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('لم يتم ربط ${item.title} بشاشة موبايل بعد.', style: const TextStyle(fontFamily: 'Cairo'))),
+      SnackBar(
+        content: Text('الوجهة غير معروفة: ${item.title}', style: const TextStyle(fontFamily: 'Cairo')),
+      ),
     );
     return Future<dynamic>.value();
   }

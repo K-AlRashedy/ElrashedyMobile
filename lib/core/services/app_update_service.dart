@@ -29,7 +29,7 @@ class AppUpdateInfo {
 }
 
 class AppUpdateService {
-  static const String currentVersion = "1.0.1";
+  static const String currentVersion = "1.2.0";
 
   /// Checks if a newer version is available on the server.
   static Future<AppUpdateInfo?> checkForUpdate(ApiClient api) async {
@@ -362,9 +362,14 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
       if (res == false) {
         // App redirected to settings for unknown sources permission
         debugPrint('Redirected to Unknown Sources settings');
+        throw Exception(
+          'يرجى تفعيل إذن "تثبيت التطبيقات غير المعروفة" من الإعدادات ثم إعادة المحاولة.',
+        );
       }
     } catch (e) {
       debugPrint('Install APK error: $e');
+      if (e is Exception) rethrow;
+      throw Exception('تعذر تشغيل مُثبّت النظام: $e');
     }
   }
 

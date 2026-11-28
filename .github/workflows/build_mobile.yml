@@ -123,10 +123,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Elrashedy ERP Mobile (v1.1.0)"
+          name: "Elrashedy ERP Mobile (v1.2.0)"
           make_latest: true
           body: |
-            ### 📱 التحديث الأحدث لتطبيق الرشيدي ERP (v1.1.0)
+            ### 📱 التحديث الأحدث لتطبيق الرشيدي ERP (v1.2.0)
             - بناء آلي لكل من **Android (APK)** و **iOS (IPA)**.
             - نقطة بيع وكاشير متنقل وإغلاق الورديات بالرقم السري (`POS`).
             - دورة الأوامر الشاملة: صرف، استلام، إلغاء، مراجعة، تحصيل، وقفل ثنائي (`Orders`).

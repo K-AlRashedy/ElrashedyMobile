@@ -1,292 +1,323 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/constants/colors.dart';
 import '../../core/network/api_client.dart';
 import '../../providers/auth_provider.dart';
+import '../../widgets/app_feedback.dart';
 import '../../widgets/async_views.dart';
+import '../../widgets/numeric_keypad_sheet.dart';
 
 class ExpensesScreen extends StatefulWidget {
-  const ExpensesScreen({super.key});
+  final bool openCreate;
+
+  const ExpensesScreen({super.key, this.openCreate = false});
 
   @override
   State<ExpensesScreen> createState() => _ExpensesScreenState();
 }
 
 class _ExpensesScreenState extends State<ExpensesScreen> {
-  final _api = ApiClient();
+  final TextEditingController _searchCtrl = TextEditingController();
+  final _uuid = const Uuid();
+  Timer? _debounce;
+  ApiCancelToken? _cancelToken;
+
   bool _isLoading = true;
   String? _error;
-  List<dynamic> _expenses = [];
-  List<dynamic> _accounts = [];
-  List<dynamic> _branches = [];
+  List<Map<String, dynamic>> _expenses = [];
+  List<Map<String, dynamic>> _accounts = [];
+
   int? _selectedBranchId;
-  String _searchQuery = '';
+  String _canceledFilter = 'active'; // active | canceled | all
+
+  ApiClient get _api => context.read<ApiClient>();
 
   @override
   void initState() {
     super.initState();
-    _initAndLoad();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await Future.wait([_loadOptions(), _loadExpenses()]);
+      if (widget.openCreate && mounted) _showExpenseFormSheet();
+    });
   }
 
-  void _initAndLoad() {
-    final auth = context.read<AuthProvider>();
-    _api.setBaseUrl(auth.serverUrl);
-    _api.setToken(auth.token);
-    _loadExpenses();
-    _loadOptions();
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _cancelToken?.cancel();
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadOptions() async {
     try {
-      final res = await _api.get('/api/v1/expenses/options/');
-      if (res is Map<String, dynamic> && mounted) {
-        setState(() {
-          _accounts = res['accounts'] as List<dynamic>? ?? [];
-        });
+      final loaded = <Map<String, dynamic>>[];
+      int page = 1;
+      bool hasNext = true;
+      while (hasNext && page <= 5) {
+        final res = await _api.get('/api/v1/expenses/options/', queryParams: {'page': page, 'page_size': '100'});
+        if (res is! Map<String, dynamic>) break;
+        final raw = res['results'] as List<dynamic>? ?? res['accounts'] as List<dynamic>? ?? [];
+        loaded.addAll(raw.whereType<Map<String, dynamic>>());
+        hasNext = res['has_next'] == true;
+        page++;
       }
-      final boot = await _api.get('/api/v1/bootstrap/');
-      if (boot is Map<String, dynamic> && mounted) {
-        setState(() {
-          _branches = boot['branches'] as List<dynamic>? ?? [];
-        });
-      }
+      if (mounted) setState(() => _accounts = loaded);
     } catch (_) {}
   }
 
   Future<void> _loadExpenses() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    _cancelToken?.cancel();
+    final token = ApiCancelToken();
+    _cancelToken = token;
+
+    setState(() { _isLoading = true; _error = null; });
     try {
-      final params = <String, String>{};
-      if (_selectedBranchId != null) {
-        params['branch_id'] = _selectedBranchId.toString();
-      }
-      final res = await _api.get('/api/v1/expenses/', queryParams: params);
+      final params = <String, dynamic>{
+        'page_size': '100',
+        if (_selectedBranchId != null) 'beneficiary_branch_id': _selectedBranchId.toString(),
+        if (_canceledFilter == 'active') 'is_canceled': 'false',
+        if (_canceledFilter == 'canceled') 'is_canceled': 'true',
+        if (_searchCtrl.text.trim().isNotEmpty) 'q': _searchCtrl.text.trim(),
+      };
+      final res = await _api.get('/api/v1/expenses/', queryParams: params, cancelToken: token);
       if (res is Map<String, dynamic> && mounted) {
+        final raw = res['results'] as List<dynamic>? ?? res['expenses'] as List<dynamic>? ?? [];
         setState(() {
-          _expenses = res['results'] as List<dynamic>? ?? res['expenses'] as List<dynamic>? ?? [];
+          _expenses = raw.whereType<Map<String, dynamic>>().toList();
           _isLoading = false;
         });
       }
+    } on ApiException catch (e) {
+      if (e.message == 'تم إلغاء الطلب.') return;
+      if (mounted) setState(() { _isLoading = false; _error = e.message; });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _error = e.toString();
-        });
-      }
+      if (mounted) setState(() { _isLoading = false; _error = e.toString(); });
     }
   }
 
-  Future<void> _cancelExpense(int id) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('إلغاء المصروف', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
-        content: const Text('هل أنت متأكد من رغبتك في إلغاء هذا المصروف؟', style: TextStyle(fontFamily: 'Cairo')),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('تراجع', style: TextStyle(fontFamily: 'Cairo'))),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('تأكيد الإلغاء', style: TextStyle(fontFamily: 'Cairo')),
-          ),
-        ],
-      ),
+  Future<void> _toggleCancelRestore(Map<String, dynamic> exp) async {
+    final isCanceled = exp['is_canceled'] == true;
+    final id = exp['id'] as int;
+    final confirmed = await AppConfirmDialog.show(
+      context,
+      title: isCanceled ? 'استعادة المصروف؟' : 'إلغاء المصروف؟',
+      message: isCanceled
+          ? 'سيتم إعادة تفعيل المصروف وخصم قيمته من الخزينة أو الوردية.'
+          : 'سيتم إلغاء المصروف ورد قيمته إلى الخزينة أو الوردية.',
+      confirmLabel: isCanceled ? 'استعادة' : 'إلغاء المصروف',
+      isDestructive: !isCanceled,
     );
-    if (confirm != true) return;
+    if (!confirmed) return;
 
     try {
-      await _api.post('/api/v1/expenses/$id/cancel/', body: {});
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إلغاء المصروف بنجاح', style: TextStyle(fontFamily: 'Cairo'))),
-        );
-        _loadExpenses();
+      if (isCanceled) {
+        await _api.post('/api/v1/expenses/$id/restore/', idempotencyKey: _uuid.v4(), body: const {});
+      } else {
+        await _api.post('/api/v1/expenses/$id/cancel/', idempotencyKey: _uuid.v4(), body: const {});
       }
+      if (!mounted) return;
+      AppFeedback.showSuccess(
+        context,
+        isCanceled ? 'تم استعادة المصروف بنجاح' : 'تم إلغاء المصروف ورد المبلغ للخزينة',
+      );
+      await _loadExpenses();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل الإلغاء: $e', style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.error),
-        );
-      }
+      if (mounted) AppFeedback.showError(context, e.toString());
     }
   }
 
-  void _showAddExpenseSheet() {
-    int? selectedAccountId;
-    int? selectedBranchId = _branches.isNotEmpty ? _branches.first['id'] as int? : null;
-    final amountController = TextEditingController();
-    final reasonController = TextEditingController();
-    bool isSubmitting = false;
+  Future<void> _showExpenseFormSheet({Map<String, dynamic>? existing}) async {
+    if (_accounts.isEmpty) await _loadOptions();
+    if (!mounted) return;
 
-    showModalBottomSheet(
+    final isEdit = existing != null;
+    final auth = context.read<AuthProvider>();
+    final branches = (auth.allBranches.isNotEmpty ? auth.allBranches : auth.userBranches)
+        .map((b) => {'id': b.id, 'name': b.name})
+        .toList();
+
+    final accountOptions = List<Map<String, dynamic>>.from(_accounts);
+    int? selectedAccountId = isEdit
+        ? (existing['account_id'] as int? ?? (existing['account'] as Map<String, dynamic>?)?['id'] as int?)
+        : (accountOptions.isNotEmpty ? accountOptions.first['id'] as int? : null);
+    if (isEdit && selectedAccountId != null && !accountOptions.any((a) => a['id'] == selectedAccountId)) {
+      final accObj = existing['account'] as Map<String, dynamic>?;
+      accountOptions.add({'id': selectedAccountId, 'name': accObj?['name'] ?? 'حساب #$selectedAccountId'});
+    }
+
+    int? selectedBranchId = isEdit
+        ? (existing['beneficiary_branch_id'] as int? ?? (existing['beneficiary_branch'] as Map<String, dynamic>?)?['id'] as int?)
+        : (branches.isNotEmpty ? branches.first['id'] as int? : null);
+    if (isEdit && selectedBranchId != null && !branches.any((b) => b['id'] == selectedBranchId)) {
+      final brObj = existing['beneficiary_branch'] as Map<String, dynamic>?;
+      branches.add({'id': selectedBranchId, 'name': brObj?['name'] ?? 'فرع #$selectedBranchId'});
+    }
+
+    final amountController = TextEditingController(text: isEdit ? (existing['amount'] ?? '').toString() : '');
+    final reasonController = TextEditingController(text: existing?['reason']?.toString() ?? '');
+    bool isSubmitting = false;
+    String? formError;
+
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
       builder: (sheetContext) => StatefulBuilder(
         builder: (ctx, setSheetState) => Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('إضافة مصروف جديد', style: TextStyle(fontFamily: 'Cairo', fontSize: 18, fontWeight: FontWeight.bold)),
-                  IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close_rounded)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<int>(
-                decoration: const InputDecoration(labelText: 'بند المصروف (الحساب)'),
-                value: selectedAccountId,
-                items: _accounts.map<DropdownMenuItem<int>>((acc) {
-                  return DropdownMenuItem<int>(
-                    value: acc['id'] as int,
-                    child: Text(acc['name']?.toString() ?? '', style: const TextStyle(fontFamily: 'Cairo')),
-                  );
-                }).toList(),
-                onChanged: (val) => setSheetState(() => selectedAccountId = val),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<int>(
-                decoration: const InputDecoration(labelText: 'الفرع المستفيد'),
-                value: selectedBranchId,
-                items: _branches.map<DropdownMenuItem<int>>((b) {
-                  return DropdownMenuItem<int>(
-                    value: b['id'] as int,
-                    child: Text(b['name']?.toString() ?? '', style: const TextStyle(fontFamily: 'Cairo')),
-                  );
-                }).toList(),
-                onChanged: (val) => setSheetState(() => selectedBranchId = val),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'المبلغ (ج.م)', prefixIcon: Icon(Icons.attach_money_rounded)),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: reasonController,
-                maxLines: 2,
-                decoration: const InputDecoration(labelText: 'بيان / سبب الصرف', prefixIcon: Icon(Icons.notes_rounded)),
-              ),
-              const SizedBox(height: 20),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        isEdit ? 'تعديل حساب ومركز تكلفة المصروف' : 'تسجيل مصروف مباشر من الخزينة',
+                        style: const TextStyle(fontFamily: 'Cairo', fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close_rounded)),
+                  ],
                 ),
-                onPressed: isSubmitting
-                    ? null
-                    : () async {
-                        if (selectedAccountId == null || selectedBranchId == null || amountController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('يرجى ملء جميع الحقول المطلوبة', style: TextStyle(fontFamily: 'Cairo'))),
-                          );
-                          return;
-                        }
-                        setSheetState(() => isSubmitting = true);
-                        try {
-                          await _api.post('/api/v1/expenses/create/', body: {
-                            'account_id': selectedAccountId,
-                            'branch_id': selectedBranchId,
-                            'amount': amountController.text.trim(),
-                            'reason': reasonController.text.trim(),
-                          });
-                          if (mounted) {
-                            Navigator.pop(sheetContext);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('تم تسجيل المصروف بنجاح', style: TextStyle(fontFamily: 'Cairo'))),
-                            );
-                            _loadExpenses();
+                const SizedBox(height: 10),
+                AppInlineError(message: formError),
+                DropdownButtonFormField<int>(
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'بند المصروف (الحساب) *'),
+                  value: accountOptions.any((a) => a['id'] == selectedAccountId) ? selectedAccountId : null,
+                  items: accountOptions
+                      .map((acc) => DropdownMenuItem<int>(value: acc['id'] as int, child: Text(acc['name']?.toString() ?? '', style: const TextStyle(fontFamily: 'Cairo'))))
+                      .toList(),
+                  onChanged: (val) => setSheetState(() => selectedAccountId = val),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'الفرع المستفيد (مركز التكلفة) *'),
+                  value: branches.any((b) => b['id'] == selectedBranchId) ? selectedBranchId : null,
+                  items: branches
+                      .map((b) => DropdownMenuItem<int>(value: b['id'] as int, child: Text(b['name']?.toString() ?? '', style: const TextStyle(fontFamily: 'Cairo'))))
+                      .toList(),
+                  onChanged: (val) => setSheetState(() => selectedBranchId = val),
+                ),
+                if (!isEdit) ...[
+                  const SizedBox(height: 12),
+                  AppNumericField(
+                    controller: amountController,
+                    label: 'المبلغ *',
+                    unit: 'ج.م',
+                    prefixIcon: Icons.payments_outlined,
+                    quickAddValues: const [50, 100, 200, 500],
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: reasonController,
+                    maxLines: 2,
+                    decoration: const InputDecoration(labelText: 'بيان / سبب الصرف', prefixIcon: Icon(Icons.notes_rounded)),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                FilledButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final amt = double.tryParse(amountController.text.trim()) ?? 0;
+                          if (selectedAccountId == null || selectedBranchId == null || (!isEdit && amt <= 0)) {
+                            setSheetState(() => formError = 'يرجى اختيار الحساب والفرع وإدخال مبلغ أكبر من صفر.');
+                            return;
                           }
-                        } catch (e) {
-                          setSheetState(() => isSubmitting = false);
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('خطأ: $e', style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.error),
-                            );
+                          setSheetState(() { isSubmitting = true; formError = null; });
+                          try {
+                            if (isEdit) {
+                              await _api.post('/api/v1/expenses/${existing['id']}/update/', idempotencyKey: _uuid.v4(), body: {
+                                'account_id': selectedAccountId,
+                                'beneficiary_branch_id': selectedBranchId,
+                              });
+                            } else {
+                              await _api.post('/api/v1/expenses/create/', idempotencyKey: _uuid.v4(), body: {
+                                'account_id': selectedAccountId,
+                                'beneficiary_branch_id': selectedBranchId,
+                                'amount': amountController.text.trim(),
+                                'reason': reasonController.text.trim(),
+                              });
+                            }
+                            if (mounted) {
+                              Navigator.pop(sheetContext);
+                              AppFeedback.showSuccess(context, isEdit ? 'تم تحديث المصروف بنجاح' : 'تم تسجيل المصروف بنجاح');
+                              await _loadExpenses();
+                            }
+                          } catch (e) {
+                            if (ctx.mounted) setSheetState(() { isSubmitting = false; formError = e.toString(); });
                           }
-                        }
-                      },
-                child: isSubmitting
-                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text('تسجيل المصروف', style: TextStyle(fontFamily: 'Cairo', fontSize: 16, fontWeight: FontWeight.bold)),
-              ),
-            ],
+                        },
+                  child: isSubmitting
+                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : Text(isEdit ? 'حفظ التعديل' : 'تسجيل المصروف'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+    amountController.dispose();
+    reasonController.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _expenses.where((exp) {
-      final reason = exp['reason']?.toString().toLowerCase() ?? '';
-      final account = exp['account_name']?.toString().toLowerCase() ?? '';
-      final q = _searchQuery.toLowerCase();
-      return q.isEmpty || reason.contains(q) || account.contains(q);
-    }).toList();
+    final auth = context.watch<AuthProvider>();
+    final branches = auth.allBranches.isNotEmpty ? auth.allBranches : auth.userBranches;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('سجل المصروفات النثرية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-        actions: [
-          IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'تحديث', onPressed: _loadExpenses),
-        ],
+        title: const Text('سجل المصروفات'),
+        actions: [IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'تحديث', onPressed: _loadExpenses)],
       ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add_rounded),
         label: const Text('تسجيل مصروف', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
-        onPressed: _showAddExpenseSheet,
+        onPressed: () => _showExpenseFormSheet(),
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Row(
+          Container(
+            color: Colors.white,
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            child: Column(
               children: [
-                Expanded(
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: 'ابحث في المصروفات...',
-                      prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary, size: 22),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: AppColors.border)),
-                    ),
-                    onChanged: (val) => setState(() => _searchQuery = val),
+                TextField(
+                  controller: _searchCtrl,
+                  decoration: const InputDecoration(
+                    hintText: 'ابحث ببيان المصروف...',
+                    prefixIcon: Icon(Icons.search_rounded, color: AppColors.primary, size: 22),
+                    isDense: true,
                   ),
+                  onChanged: (_) {
+                    _debounce?.cancel();
+                    _debounce = Timer(const Duration(milliseconds: 350), _loadExpenses);
+                  },
                 ),
-                if (_branches.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  DropdownButton<int?>(
-                    value: _selectedBranchId,
-                    hint: const Text('كل الفروع', style: TextStyle(fontFamily: 'Cairo', fontSize: 12)),
-                    underline: const SizedBox(),
+                if (branches.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<int?>(
+                    isExpanded: true,
+                    value: branches.any((b) => b.id == _selectedBranchId) ? _selectedBranchId : null,
+                    decoration: const InputDecoration(labelText: 'تصفية حسب الفرع المستفيد', isDense: true),
                     items: [
-                      const DropdownMenuItem<int?>(value: null, child: Text('كل الفروع', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
-                      ..._branches.map((b) => DropdownMenuItem<int?>(
-                            value: b['id'] as int,
-                            child: Text(b['name']?.toString() ?? '', style: const TextStyle(fontFamily: 'Cairo', fontSize: 12)),
-                          )),
+                      const DropdownMenuItem<int?>(value: null, child: Text('كل الفروع', style: TextStyle(fontFamily: 'Cairo'))),
+                      ...branches.map((b) => DropdownMenuItem<int?>(value: b.id, child: Text(b.name, style: const TextStyle(fontFamily: 'Cairo')))),
                     ],
                     onChanged: (val) {
                       setState(() => _selectedBranchId = val);
@@ -294,127 +325,159 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     },
                   ),
                 ],
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final entry in const [('active', 'النشطة'), ('canceled', 'الملغاة'), ('all', 'الكل')]) ...[
+                        ChoiceChip(
+                          label: Text(entry.$2, style: TextStyle(fontFamily: 'Cairo', fontSize: 12, color: _canceledFilter == entry.$1 ? Colors.white : AppColors.textPrimary)),
+                          selected: _canceledFilter == entry.$1,
+                          selectedColor: AppColors.primary,
+                          onSelected: (_) {
+                            setState(() => _canceledFilter = entry.$1);
+                            _loadExpenses();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
+          const Divider(height: 1),
           Expanded(
             child: _isLoading
                 ? const AppLoadingView(message: 'جاري تحميل المصروفات...')
                 : _error != null
                     ? AppErrorView(message: _error!, onRetry: _loadExpenses)
-                    : filtered.isEmpty
-                        ? const AppEmptyView(title: 'لا توجد مصروفات مسجلة', icon: Icons.receipt_long_outlined)
+                    : _expenses.isEmpty
+                        ? AppEmptyView(
+                            title: 'لا توجد مصروفات مطابقة',
+                            icon: Icons.receipt_long_outlined,
+                            actionLabel: 'تسجيل مصروف جديد',
+                            onAction: () => _showExpenseFormSheet(),
+                          )
                         : RefreshIndicator(
                             onRefresh: _loadExpenses,
                             color: AppColors.primary,
                             child: ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
-                              itemCount: filtered.length,
+                              padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+                              itemCount: _expenses.length,
                               separatorBuilder: (_, __) => const SizedBox(height: 10),
                               itemBuilder: (ctx, i) {
-                                final exp = filtered[i] as Map<String, dynamic>;
+                                final exp = _expenses[i];
                                 final isCanceled = exp['is_canceled'] == true;
-                                final amount = exp['amount']?.toString() ?? '0';
+                                final isStandalone = exp['is_standalone'] == true;
+                                final shiftDone = !isStandalone && (exp['shift']?['is_done'] == true);
+                                final accountName = (exp['account'] as Map<String, dynamic>?)?['name']?.toString() ?? 'مصروف';
+                                final branchName = (exp['beneficiary_branch'] as Map<String, dynamic>?)?['name']?.toString() ?? '';
+                                final amount = exp['amount']?.toString() ?? '0.00';
+
                                 return Container(
                                   padding: const EdgeInsets.all(14),
                                   decoration: BoxDecoration(
                                     color: Colors.white,
                                     borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: isCanceled ? AppColors.error.withOpacity(0.3) : AppColors.border),
+                                    border: Border.all(color: isCanceled ? AppColors.error.withValues(alpha: 0.3) : AppColors.border),
                                   ),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
                                     children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(10),
-                                        decoration: BoxDecoration(
-                                          color: isCanceled ? AppColors.error.withOpacity(0.1) : AppColors.primaryLight,
-                                          borderRadius: BorderRadius.circular(12),
-                                        ),
-                                        child: Icon(
-                                          isCanceled ? Icons.cancel_outlined : Icons.monetization_on_outlined,
-                                          color: isCanceled ? AppColors.error : AppColors.primary,
-                                          size: 22,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              exp['account_name']?.toString() ?? 'مصروف',
-                                              style: TextStyle(
-                                                fontFamily: 'Cairo',
-                                                fontSize: 15,
-                                                fontWeight: FontWeight.bold,
-                                                color: isCanceled ? AppColors.textMuted : AppColors.textPrimary,
-                                                decoration: isCanceled ? TextDecoration.lineThrough : null,
-                                              ),
+                                      Row(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: isCanceled ? AppColors.dangerSoft : AppColors.primaryLight,
+                                              borderRadius: BorderRadius.circular(12),
                                             ),
-                                            if (exp['reason'] != null && exp['reason'].toString().isNotEmpty)
-                                              Text(
-                                                exp['reason'].toString(),
-                                                style: const TextStyle(fontFamily: 'Cairo', fontSize: 13, color: AppColors.textSecondary),
-                                              ),
-                                            const SizedBox(height: 4),
-                                            Row(
+                                            child: Icon(
+                                              isCanceled ? Icons.cancel_outlined : Icons.monetization_on_outlined,
+                                              color: isCanceled ? AppColors.error : AppColors.primary,
+                                              size: 22,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                Icon(Icons.storefront_outlined, size: 14, color: AppColors.textMuted),
-                                                const SizedBox(width: 4),
                                                 Text(
-                                                  exp['beneficiary_branch_name']?.toString() ?? exp['branch_name']?.toString() ?? '',
-                                                  style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textMuted),
+                                                  accountName,
+                                                  style: TextStyle(
+                                                    fontFamily: 'Cairo',
+                                                    fontSize: 15,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isCanceled ? AppColors.textMuted : AppColors.textPrimary,
+                                                    decoration: isCanceled ? TextDecoration.lineThrough : null,
+                                                  ),
                                                 ),
-                                                const SizedBox(width: 12),
-                                                Icon(Icons.schedule_outlined, size: 14, color: AppColors.textMuted),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  exp['date']?.toString() ?? '',
-                                                  style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textMuted),
+                                                if ((exp['reason']?.toString() ?? '').isNotEmpty)
+                                                  Text(exp['reason'].toString(), style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, color: AppColors.textSecondary)),
+                                                const SizedBox(height: 4),
+                                                Wrap(
+                                                  spacing: 6,
+                                                  runSpacing: 4,
+                                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                                  children: [
+                                                    AppStatusBadge(
+                                                      label: isStandalone ? 'خزينة مباشرة' : 'ضمن وردية',
+                                                      color: isStandalone ? AppColors.info : AppColors.accentAmber,
+                                                    ),
+                                                    Text('$branchName • ${exp['date'] ?? ''}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textMuted)),
+                                                  ],
                                                 ),
                                               ],
                                             ),
-                                          ],
-                                        ),
-                                      ),
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
+                                          ),
                                           Text(
                                             '$amount ج.م',
                                             style: TextStyle(
                                               fontFamily: 'Cairo',
-                                              fontSize: 15,
-                                              fontWeight: FontWeight.bold,
+                                              fontSize: 15.5,
+                                              fontWeight: FontWeight.w800,
                                               color: isCanceled ? AppColors.textMuted : AppColors.error,
                                             ),
                                           ),
-                                          if (!isCanceled) ...[
-                                            const SizedBox(height: 6),
-                                            InkWell(
-                                              onTap: () => _cancelExpense(exp['id'] as int),
-                                              child: Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                                decoration: BoxDecoration(
-                                                  color: AppColors.error.withOpacity(0.1),
-                                                  borderRadius: BorderRadius.circular(6),
-                                                ),
-                                                child: const Text(
-                                                  'إلغاء',
-                                                  style: TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.error, fontWeight: FontWeight.bold),
-                                                ),
-                                              ),
-                                            ),
-                                          ] else ...[
-                                            const SizedBox(height: 6),
-                                            const Text(
-                                              'ملغي',
-                                              style: TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.error, fontWeight: FontWeight.bold),
-                                            ),
-                                          ],
                                         ],
                                       ),
+                                      if ((isStandalone && !isCanceled) || !shiftDone) ...[
+                                        const Divider(height: 16),
+                                        Row(
+                                          mainAxisAlignment: MainAxisAlignment.end,
+                                          children: [
+                                            if (isStandalone && !isCanceled)
+                                              TextButton.icon(
+                                                icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.info),
+                                                label: const Text('تعديل', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, color: AppColors.info)),
+                                                onPressed: () => _showExpenseFormSheet(existing: exp),
+                                              ),
+                                            if (!shiftDone)
+                                              TextButton.icon(
+                                                icon: Icon(
+                                                  isCanceled ? Icons.restore_rounded : Icons.cancel_outlined,
+                                                  size: 17,
+                                                  color: isCanceled ? AppColors.success : AppColors.error,
+                                                ),
+                                                label: Text(
+                                                  isCanceled ? 'استعادة' : 'إلغاء المصروف',
+                                                  style: TextStyle(
+                                                    fontFamily: 'Cairo',
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isCanceled ? AppColors.success : AppColors.error,
+                                                  ),
+                                                ),
+                                                onPressed: () => _toggleCancelRestore(exp),
+                                              ),
+                                          ],
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 );

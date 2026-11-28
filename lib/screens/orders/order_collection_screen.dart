@@ -6,6 +6,7 @@ import '../../core/network/api_client.dart';
 import '../../core/pagination.dart';
 import '../../models/branch_model.dart';
 import '../../widgets/async_views.dart';
+import '../../widgets/numeric_keypad_sheet.dart';
 
 class CollectionItem {
   final int productId;
@@ -23,12 +24,12 @@ class CollectionItem {
   });
 
   factory CollectionItem.fromJson(Map<String, dynamic> json) => CollectionItem(
-    productId: json['product_id'] as int? ?? 0,
-    productName: json['product_name']?.toString() ?? '',
-    requested: _number(json['requested']),
-    sent: _number(json['sent']),
-    remaining: _number(json['remaining']),
-  );
+        productId: json['product_id'] as int? ?? 0,
+        productName: json['product_name']?.toString() ?? '',
+        requested: _number(json['requested']),
+        sent: _number(json['sent']),
+        remaining: _number(json['remaining']),
+      );
 
   static double _number(dynamic value) => double.tryParse(value?.toString() ?? '') ?? 0;
 }
@@ -75,7 +76,7 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
       final selected = response['selected_branch'];
       final target = response['target_branch'];
       _selectedBranch = selected is Map<String, dynamic> ? BranchModel.fromJson(selected) : null;
-      _branchId ??= _selectedBranch?.id;
+      _branchId ??= _selectedBranch?.id ?? (branches.isNotEmpty ? branches.first.id : null);
       _targetBranch = target is Map<String, dynamic> ? BranchModel.fromJson(target) : null;
       _notes = (response['notes'] as List<dynamic>? ?? const []).whereType<Map<String, dynamic>>().toList();
     });
@@ -83,13 +84,81 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
   }
 
   Future<void> _selectBranch(int? branchId) async {
-    if (branchId == null) return;
-    final branch = _branches.firstWhere((branch) => branch.id == branchId);
+    if (branchId == null || _branches.isEmpty) return;
+    final branch = _branches.firstWhere((b) => b.id == branchId, orElse: () => _branches.first);
     setState(() {
       _selectedBranch = branch;
-      _branchId = branchId;
+      _branchId = branch.id;
     });
-    await _pagination.replaceFilters({'branch_id': branchId});
+    await _pagination.replaceFilters({'branch_id': branch.id});
+  }
+
+  void _showNotesSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.9,
+        builder: (_, scrollCtrl) => Column(
+          children: [
+            const SizedBox(height: 12),
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.borderStrong, borderRadius: BorderRadius.circular(4))),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.sticky_note_2_rounded, color: AppColors.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('ملاحظات الطلبات (${_notes.length})', style: const TextStyle(fontFamily: 'Cairo', fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close_rounded)),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.separated(
+                controller: scrollCtrl,
+                padding: const EdgeInsets.all(16),
+                itemCount: _notes.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, i) {
+                  final note = _notes[i];
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceMuted,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${note['product_name']} • طلب #${note['order_id']}',
+                          style: const TextStyle(fontFamily: 'Cairo', fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${note['requesting_branch']?['name'] ?? ''}',
+                          style: const TextStyle(fontFamily: 'Cairo', fontSize: 11.5, color: AppColors.primaryDark, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 4),
+                        Text('${note['note'] ?? ''}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 12.5)),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -97,26 +166,39 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
     final requested = _pagination.items.fold<double>(0, (sum, item) => sum + item.requested);
     final sent = _pagination.items.fold<double>(0, (sum, item) => sum + item.sent);
     final remaining = _pagination.items.fold<double>(0, (sum, item) => sum + item.remaining);
+    final validBranchId = _branches.any((b) => b.id == _branchId) ? _branchId : null;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('التجميعة العامة', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
-        actions: [IconButton(onPressed: _pagination.refresh, icon: const Icon(Icons.refresh_rounded))],
+        title: const Text('التجميعة العامة'),
+        actions: [
+          if (_notes.isNotEmpty)
+            TextButton.icon(
+              onPressed: _showNotesSheet,
+              icon: const Icon(Icons.sticky_note_2_outlined, size: 18),
+              label: Text('ملاحظات (${_notes.length})', style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+            ),
+          IconButton(onPressed: _pagination.refresh, icon: const Icon(Icons.refresh_rounded)),
+        ],
       ),
       body: Column(
         children: [
           Container(
             width: double.infinity,
             color: Colors.white,
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 DropdownButtonFormField<int>(
-                  initialValue: _branchId,
+                  value: validBranchId,
                   isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'الفرع المجمع', border: OutlineInputBorder(), isDense: true),
-                  items: [for (final branch in _branches) DropdownMenuItem(value: branch.id, child: Text(branch.name, style: const TextStyle(fontFamily: 'Cairo')))],
+                  decoration: const InputDecoration(labelText: 'الفرع المجمع', isDense: true),
+                  items: [
+                    for (final branch in _branches)
+                      DropdownMenuItem(value: branch.id, child: Text(branch.name, style: const TextStyle(fontFamily: 'Cairo'))),
+                  ],
                   onChanged: _selectBranch,
                 ),
                 if (_targetBranch != null) ...[
@@ -127,7 +209,7 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
             ),
           ),
           Container(
-            margin: const EdgeInsets.all(16),
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(color: AppColors.primaryLight, borderRadius: BorderRadius.circular(16)),
             child: Row(
@@ -151,7 +233,7 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(item.productName, style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+                    Text(item.productName, style: const TextStyle(fontFamily: 'Cairo', fontSize: 14.5, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
                     Row(
                       children: [
@@ -165,31 +247,21 @@ class _OrderCollectionScreenState extends State<OrderCollectionScreen> {
               ),
             ),
           ),
-          if (_notes.isNotEmpty)
-            ExpansionTile(
-              tilePadding: const EdgeInsets.symmetric(horizontal: 20),
-              title: Text('ملاحظات الطلبات (${_notes.length})', style: const TextStyle(fontFamily: 'Cairo', fontSize: 13, fontWeight: FontWeight.bold)),
-              children: [
-                for (final note in _notes)
-                  ListTile(
-                    dense: true,
-                    title: Text('${note['product_name']} • طلب #${note['order_id']}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
-                    subtitle: Text('${note['requesting_branch']?['name'] ?? ''}\n${note['note'] ?? ''}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 11)),
-                  ),
-              ],
-            ),
         ],
       ),
     );
   }
 
   Widget _summary(String label, double value, Color color) => Expanded(
-    child: Column(
-      children: [
-        Text(label, style: const TextStyle(fontFamily: 'Cairo', fontSize: 10, color: AppColors.textSecondary)),
-        const SizedBox(height: 3),
-        Text(value == value.roundToDouble() ? value.toInt().toString() : value.toStringAsFixed(2), style: TextStyle(fontFamily: 'Cairo', fontSize: 15, fontWeight: FontWeight.bold, color: color)),
-      ],
-    ),
-  );
+        child: Column(
+          children: [
+            Text(label, style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textSecondary)),
+            const SizedBox(height: 3),
+            Text(
+              AppNumericKeypadSheet.formatNumber(value),
+              style: TextStyle(fontFamily: 'Cairo', fontSize: 15, fontWeight: FontWeight.w800, color: color),
+            ),
+          ],
+        ),
+      );
 }

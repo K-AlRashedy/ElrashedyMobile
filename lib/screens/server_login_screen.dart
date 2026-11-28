@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../core/constants/colors.dart';
 import '../core/constants/config.dart';
 import '../core/network/api_client.dart';
@@ -25,6 +26,7 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
   bool _isTestingPing = false;
   bool? _isServerReachable;
   String? _pingMessage;
+  bool _showServerField = false;
 
   @override
   void initState() {
@@ -35,15 +37,16 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
   Future<void> _loadSavedData() async {
     final savedUrl = await _storage.getServerUrl();
     final savedUser = await _storage.getLastUsername();
-    
-    // Default server is AppConfig.defaultServerUrl
-    final effectiveUrl = (savedUrl.isNotEmpty) ? savedUrl : AppConfig.defaultServerUrl;
+
+    final effectiveUrl = savedUrl.isNotEmpty ? savedUrl : AppConfig.defaultServerUrl;
     _serverUrlController.text = effectiveUrl;
+    _showServerField = effectiveUrl != AppConfig.defaultServerUrl;
     _testServerConnection(effectiveUrl);
 
     if (savedUser != null && savedUser.isNotEmpty) {
       _usernameController.text = savedUser;
     }
+    if (mounted) setState(() {});
   }
 
   Future<void> _testServerConnection(String url) async {
@@ -54,7 +57,7 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
       _pingMessage = null;
     });
 
-    final api = ApiClient();
+    final api = context.read<ApiClient>();
     final reachable = await api.pingServer(url);
 
     if (mounted) {
@@ -62,14 +65,15 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
         _isTestingPing = false;
         _isServerReachable = reachable;
         _pingMessage = reachable
-            ? 'السيرفر متصل ويعمل بنجاح'
-            : 'تعذر الاتصال بالسيرفر. تأكد من الرابط أو الشبكة';
+            ? 'السيرفر متصل وجاهز للعمل'
+            : 'تعذر الاتصال بالسيرفر. تحقق من الرابط أو الإنترنت';
       });
     }
   }
 
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
 
     final auth = context.read<AuthProvider>();
     final success = await auth.login(
@@ -98,11 +102,11 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
     final auth = context.watch<AuthProvider>();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF1F5F9),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 440),
               child: Form(
@@ -111,206 +115,202 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Brand Logo & Title
                     Center(
                       child: Container(
-                        width: 90,
-                        height: 90,
+                        width: 84,
+                        height: 84,
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(24),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.08),
-                              blurRadius: 16,
-                              offset: const Offset(0, 6),
-                            ),
-                          ],
                           border: Border.all(color: AppColors.border),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x12000000), blurRadius: 16, offset: Offset(0, 6)),
+                          ],
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(24),
-                          child: Image.asset(
-                            'assets/images/logo_erp.png',
-                            fit: BoxFit.cover,
-                          ),
+                          child: Image.asset('assets/images/logo_erp.png', fit: BoxFit.cover),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 14),
                     const Text(
                       'الرشيدي ERP',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: 'Cairo',
-                        fontSize: 26,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 25,
+                        fontWeight: FontWeight.w900,
                         color: AppColors.secondary,
-                        letterSpacing: -0.5,
                       ),
                     ),
                     const SizedBox(height: 4),
                     const Text(
-                      'منظومة إدارة المطاعم والمخازن والإنتاج',
+                      'منظومة إدارة الفروع والمخازن والإنتاج',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: 'Cairo',
-                        fontSize: 13,
-                        color: AppColors.textSecondary,
+                      style: TextStyle(fontFamily: 'Cairo', fontSize: 13, color: AppColors.textSecondary),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Connection status badge
+                    Center(
+                      child: InkWell(
+                        onTap: () => _testServerConnection(_serverUrlController.text),
+                        borderRadius: BorderRadius.circular(100),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: _isServerReachable == true
+                                ? AppColors.successSoft
+                                : _isServerReachable == false
+                                    ? AppColors.dangerSoft
+                                    : Colors.white,
+                            borderRadius: BorderRadius.circular(100),
+                            border: Border.all(
+                              color: _isServerReachable == true
+                                  ? AppColors.success.withValues(alpha: 0.3)
+                                  : _isServerReachable == false
+                                      ? AppColors.error.withValues(alpha: 0.3)
+                                      : AppColors.border,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_isTestingPing)
+                                const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              else
+                                Icon(
+                                  _isServerReachable == true
+                                      ? Icons.cloud_done_rounded
+                                      : _isServerReachable == false
+                                          ? Icons.cloud_off_rounded
+                                          : Icons.dns_outlined,
+                                  size: 16,
+                                  color: _isServerReachable == true
+                                      ? AppColors.success
+                                      : _isServerReachable == false
+                                          ? AppColors.error
+                                          : AppColors.textSecondary,
+                                ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  _isTestingPing
+                                      ? 'جاري فحص الاتصال بالسيرفر...'
+                                      : (_pingMessage ?? 'اضغط لفحص الاتصال'),
+                                  style: TextStyle(
+                                    fontFamily: 'Cairo',
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: _isServerReachable == true
+                                        ? AppColors.success
+                                        : _isServerReachable == false
+                                            ? AppColors.error
+                                            : AppColors.textSecondary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 32),
 
-                    // Card with inputs
+                    const SizedBox(height: 18),
+
                     Container(
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.all(22),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(24),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.04),
-                            blurRadius: 20,
-                            offset: const Offset(0, 6),
-                          ),
-                        ],
                         border: Border.all(color: AppColors.border),
+                        boxShadow: const [
+                          BoxShadow(color: Color(0x0A000000), blurRadius: 18, offset: Offset(0, 6)),
+                        ],
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Text(
-                            'تسجيل الدخول',
-                            style: TextStyle(
-                              fontFamily: 'Cairo',
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'أدخل رابط النظام واسم المستخدم للمتابعة بنفس صلاحياتك',
-                            style: TextStyle(
-                              fontFamily: 'Cairo',
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-
-                          // Server URL Field
-                          TextFormField(
-                            controller: _serverUrlController,
-                            keyboardType: TextInputType.url,
-                            textDirection: TextDirection.ltr,
-                            textAlign: TextAlign.start,
-                            decoration: InputDecoration(
-                              labelText: 'رابط السيرفر (Website Link)',
-                              hintText: AppConfig.defaultServerUrl,
-                              prefixIcon: const Icon(Icons.dns_rounded, color: AppColors.primary, size: 20),
-                              suffixIcon: IconButton(
-                                icon: _isTestingPing
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
-                                      )
-                                    : const Icon(Icons.refresh_rounded, size: 20),
-                                onPressed: () => _testServerConnection(_serverUrlController.text),
-                                tooltip: 'فحص الاتصال',
-                              ),
-                            ),
-                            validator: (val) {
-                              if (val == null || val.trim().isEmpty) {
-                                return 'يرجى إدخال رابط السيرفر.';
-                              }
-                              return null;
-                            },
-                            onChanged: (val) {
-                              setState(() {});
-                              if (val.length > 8) {
-                                _testServerConnection(val);
-                              }
-                            },
-                          ),
-
-                          // Option to restore default official URL if changed
-                          if (_serverUrlController.text.trim() != AppConfig.defaultServerUrl && _serverUrlController.text.trim().isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: InkWell(
-                                onTap: () {
-                                  setState(() {
-                                    _serverUrlController.text = AppConfig.defaultServerUrl;
-                                  });
-                                  _testServerConnection(AppConfig.defaultServerUrl);
-                                },
-                                borderRadius: BorderRadius.circular(8),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: const [
-                                      Icon(Icons.restore_rounded, size: 14, color: AppColors.primary),
-                                      SizedBox(width: 4),
-                                      Text(
-                                        'استعادة الرابط الرسمي الافتراضي',
-                                        style: TextStyle(
-                                          fontFamily: 'Cairo',
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.bold,
-                                          color: AppColors.primary,
-                                        ),
-                                      ),
-                                    ],
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'تسجيل الدخول',
+                                  style: TextStyle(
+                                    fontFamily: 'Cairo',
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.textPrimary,
                                   ),
                                 ),
                               ),
+                              TextButton.icon(
+                                onPressed: () => setState(() => _showServerField = !_showServerField),
+                                icon: Icon(
+                                  _showServerField ? Icons.expand_less_rounded : Icons.dns_rounded,
+                                  size: 17,
+                                  color: AppColors.primary,
+                                ),
+                                label: Text(
+                                  _showServerField ? 'إخفاء السيرفر' : 'تغيير السيرفر',
+                                  style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+
+                          if (_showServerField) ...[
+                            TextFormField(
+                              controller: _serverUrlController,
+                              keyboardType: TextInputType.url,
+                              textDirection: TextDirection.ltr,
+                              textAlign: TextAlign.start,
+                              decoration: InputDecoration(
+                                labelText: 'رابط السيرفر',
+                                hintText: AppConfig.defaultServerUrl,
+                                prefixIcon: const Icon(Icons.dns_rounded, color: AppColors.primary, size: 20),
+                                suffixIcon: IconButton(
+                                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                                  onPressed: () => _testServerConnection(_serverUrlController.text),
+                                  tooltip: 'فحص الاتصال',
+                                ),
+                              ),
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) {
+                                  return 'يرجى إدخال رابط السيرفر.';
+                                }
+                                return null;
+                              },
                             ),
+                            if (_serverUrlController.text.trim() != AppConfig.defaultServerUrl)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton.icon(
+                                  onPressed: () {
+                                    setState(() {
+                                      _serverUrlController.text = AppConfig.defaultServerUrl;
+                                    });
+                                    _testServerConnection(AppConfig.defaultServerUrl);
+                                  },
+                                  icon: const Icon(Icons.restore_rounded, size: 15),
+                                  label: const Text('استعادة السيرفر الرسمي', style: TextStyle(fontFamily: 'Cairo', fontSize: 12)),
+                                ),
+                              ),
+                            const SizedBox(height: 12),
                           ],
 
-                          // Ping status indicator
-                          if (_pingMessage != null) ...[
-                            const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                Icon(
-                                  _isServerReachable == true
-                                      ? Icons.check_circle_rounded
-                                      : Icons.cancel_rounded,
-                                  size: 14,
-                                  color: _isServerReachable == true
-                                      ? AppColors.success
-                                      : AppColors.error,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    _pingMessage!,
-                                    style: TextStyle(
-                                      fontFamily: 'Cairo',
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: _isServerReachable == true
-                                          ? AppColors.success
-                                          : AppColors.error,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-
-                          const SizedBox(height: 16),
-
-                          // Username Field
                           TextFormField(
                             controller: _usernameController,
+                            textInputAction: TextInputAction.next,
                             decoration: const InputDecoration(
                               labelText: 'اسم المستخدم',
-                              hintText: 'أدخل اسم المستخدم في ERP',
+                              hintText: 'أدخل اسم المستخدم في النظام',
                               prefixIcon: Icon(Icons.person_outline_rounded, color: AppColors.primary, size: 22),
                             ),
                             validator: (val) {
@@ -320,12 +320,13 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                               return null;
                             },
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 14),
 
-                          // Password Field
                           TextFormField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
+                            textInputAction: TextInputAction.done,
+                            onFieldSubmitted: (_) => auth.isLoading ? null : _handleLogin(),
                             decoration: InputDecoration(
                               labelText: 'كلمة المرور',
                               hintText: '••••••••',
@@ -336,9 +337,7 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                                   size: 20,
                                   color: AppColors.textMuted,
                                 ),
-                                onPressed: () {
-                                  setState(() => _obscurePassword = !_obscurePassword);
-                                },
+                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                               ),
                             ),
                             validator: (val) {
@@ -350,13 +349,13 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                           ),
 
                           if (auth.errorMessage != null) ...[
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 14),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                               decoration: BoxDecoration(
-                                color: AppColors.error.withOpacity(0.08),
+                                color: AppColors.dangerSoft,
                                 borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                                border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
                               ),
                               child: Row(
                                 children: [
@@ -367,9 +366,9 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                                       auth.errorMessage!,
                                       style: const TextStyle(
                                         fontFamily: 'Cairo',
-                                        fontSize: 12,
+                                        fontSize: 12.5,
                                         color: AppColors.error,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w700,
                                       ),
                                     ),
                                   ),
@@ -378,14 +377,12 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                             ),
                           ],
 
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 20),
 
-                          // Submit Button
                           ElevatedButton(
                             onPressed: auth.isLoading ? null : _handleLogin,
                             style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              minimumSize: const Size.fromHeight(54),
                             ),
                             child: auth.isLoading
                                 ? const SizedBox(
@@ -394,27 +391,18 @@ class _ServerLoginScreenState extends State<ServerLoginScreen> {
                                     child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
                                   )
                                 : const Text(
-                                    'تسجيل الدخول',
-                                    style: TextStyle(
-                                      fontFamily: 'Cairo',
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                    'دخول للنظام',
+                                    style: TextStyle(fontFamily: 'Cairo', fontSize: 16, fontWeight: FontWeight.bold),
                                   ),
                           ),
                         ],
                       ),
                     ),
-
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 18),
                     const Text(
-                      'نسخة الهاتف المحمول • اتصال آمن عبر مشفرات ERP',
+                      'اتصال مشفر مباشر مع سيرفر الرشيدي ERP',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: 'Cairo',
-                        fontSize: 11,
-                        color: AppColors.textMuted,
-                      ),
+                      style: TextStyle(fontFamily: 'Cairo', fontSize: 11.5, color: AppColors.textMuted),
                     ),
                   ],
                 ),

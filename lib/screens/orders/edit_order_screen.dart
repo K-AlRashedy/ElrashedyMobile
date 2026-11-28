@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/constants/colors.dart';
 import '../../core/network/api_client.dart';
 import '../../models/product_model.dart';
 import '../../providers/order_provider.dart';
+import '../../widgets/app_feedback.dart';
 import '../../widgets/async_views.dart';
+import '../../widgets/numeric_keypad_sheet.dart';
 
 class EditOrderScreen extends StatefulWidget {
   final int orderId;
@@ -29,12 +32,8 @@ class _EditableOrderItem {
     required this.unit,
     required double quantity,
     required String note,
-  })  : quantity = TextEditingController(text: _number(quantity)),
+  })  : quantity = TextEditingController(text: AppNumericKeypadSheet.formatNumber(quantity)),
         note = TextEditingController(text: note);
-
-  static String _number(double value) => value == value.roundToDouble()
-      ? value.toInt().toString()
-      : value.toString();
 
   void dispose() {
     quantity.dispose();
@@ -43,6 +42,7 @@ class _EditableOrderItem {
 }
 
 class _EditOrderScreenState extends State<EditOrderScreen> {
+  final _uuid = const Uuid();
   final List<_EditableOrderItem> _items = [];
   bool _isLoading = true;
   bool _isSaving = false;
@@ -87,7 +87,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
       _items
         ..clear()
         ..addAll(loaded);
-      await context.read<OrderProvider>().loadCatalog();
+      await context.read<OrderProvider>().loadCatalog(refresh: true);
     } catch (error) {
       if (mounted) _error = error.toString();
     } finally {
@@ -105,9 +105,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
 
   void _addProduct(ProductModel product) {
     if (_items.any((item) => item.productId == product.id)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${product.name} موجود بالفعل في الطلب.', style: const TextStyle(fontFamily: 'Cairo'))),
-      );
+      AppFeedback.showError(context, '${product.name} موجود بالفعل في الطلب.');
       return;
     }
     setState(() {
@@ -141,7 +139,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
                 return Column(
                   children: [
                     const SizedBox(height: 12),
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.border, borderRadius: BorderRadius.circular(4))),
+                    Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.borderStrong, borderRadius: BorderRadius.circular(4))),
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: TextField(
@@ -154,25 +152,43 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
                       ),
                     ),
                     Expanded(
-                      child: products.isEmpty
-                          ? const AppEmptyView(message: 'لا توجد أصناف مطابقة.')
-                          : ListView.builder(
-                              controller: scrollController,
-                              itemCount: products.length,
-                              itemBuilder: (_, index) {
-                                final product = products[index];
-                                return ListTile(
-                                  leading: const Icon(Icons.inventory_2_rounded, color: AppColors.primary),
-                                  title: Text(product.name, style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
-                                  subtitle: Text('${product.category} • ${product.unit}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 11)),
-                                  trailing: const Icon(Icons.add_circle_outline_rounded, color: AppColors.primary),
-                                  onTap: () {
-                                    _addProduct(product);
-                                    Navigator.of(sheetContext).pop();
-                                  },
-                                );
-                              },
-                            ),
+                      child: value.isLoadingCatalog && products.isEmpty
+                          ? const AppLoadingView()
+                          : value.errorMessage != null && products.isEmpty
+                              ? AppErrorView(message: value.errorMessage!, onRetry: () => provider.loadCatalog(refresh: true))
+                              : products.isEmpty
+                                  ? const AppEmptyView(message: 'لا توجد أصناف مطابقة.')
+                                  : NotificationListener<ScrollNotification>(
+                                      onNotification: (info) {
+                                        if (info.metrics.extentAfter < 250 && value.catalogHasNext && !value.isLoadingMoreCatalog) {
+                                          value.loadMoreCatalog();
+                                        }
+                                        return false;
+                                      },
+                                      child: ListView.builder(
+                                        controller: scrollController,
+                                        itemCount: products.length + (value.catalogHasNext ? 1 : 0),
+                                        itemBuilder: (_, index) {
+                                          if (index >= products.length) {
+                                            return const Padding(
+                                              padding: EdgeInsets.all(14),
+                                              child: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+                                            );
+                                          }
+                                          final product = products[index];
+                                          return ListTile(
+                                            leading: const Icon(Icons.inventory_2_rounded, color: AppColors.primary),
+                                            title: Text(product.name, style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
+                                            subtitle: Text('${product.category} • ${product.unit}', style: const TextStyle(fontFamily: 'Cairo', fontSize: 11.5)),
+                                            trailing: const Icon(Icons.add_circle_outline_rounded, color: AppColors.primary),
+                                            onTap: () {
+                                              _addProduct(product);
+                                              Navigator.of(sheetContext).pop();
+                                            },
+                                          );
+                                        },
+                                      ),
+                                    ),
                     ),
                   ],
                 );
@@ -182,6 +198,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
         );
       },
     );
+    provider.clearSearch();
     searchController.dispose();
   }
 
@@ -190,9 +207,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
     for (final item in _items) {
       final quantity = double.tryParse(item.quantity.text.trim());
       if (quantity == null || quantity <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('أدخل كمية صحيحة للصنف ${item.name}.', style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.danger),
-        );
+        AppFeedback.showError(context, 'أدخل كمية صحيحة أكبر من صفر للصنف ${item.name}.');
         return;
       }
       payload.add({
@@ -202,25 +217,22 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
       });
     }
     if (payload.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا يمكن حفظ طلب بدون أصناف.', style: TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.danger),
-      );
+      AppFeedback.showError(context, 'لا يمكن حفظ طلب بدون أصناف.');
       return;
     }
     setState(() => _isSaving = true);
     try {
       await context.read<ApiClient>().post(
         '/api/v1/orders/update/${widget.orderId}/',
-        idempotencyKey: 'order-update-${widget.orderId}-${DateTime.now().millisecondsSinceEpoch}',
+        idempotencyKey: _uuid.v4(),
         body: {'items': payload},
       );
-      if (mounted) Navigator.of(context).pop(true);
-    } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.toString(), style: const TextStyle(fontFamily: 'Cairo')), backgroundColor: AppColors.danger),
-        );
+        AppFeedback.showSuccess(context, 'تم تحديث أصناف الطلب بنجاح');
+        Navigator.of(context).pop(true);
       }
+    } catch (error) {
+      if (mounted) AppFeedback.showError(context, error.toString());
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -230,9 +242,7 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: const Text('تعديل أصناف الطلب', style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
-      ),
+      appBar: AppBar(title: Text('تعديل طلب #${widget.orderId}')),
       body: _isLoading
           ? const AppLoadingView()
           : _error != null
@@ -241,39 +251,50 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
                   children: [
                     Expanded(
                       child: ListView(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                         children: [
                           Container(
                             padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(color: AppColors.primaryLight, borderRadius: BorderRadius.circular(14)),
-                            child: const Row(children: [
-                              Icon(Icons.info_outline_rounded, color: AppColors.primary, size: 20),
-                              SizedBox(width: 10),
-                              Expanded(child: Text('سيتم استبدال أصناف الطلب الحالية بالقائمة التالية. الفروع لا يمكن تغييرها أثناء التعديل.', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, color: AppColors.primaryDark))),
-                            ]),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.info_outline_rounded, color: AppColors.primary, size: 20),
+                                SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'سيتم استبدال أصناف الطلب الحالية بالقائمة التالية. الفروع لا يمكن تغييرها أثناء التعديل.',
+                                    style: TextStyle(fontFamily: 'Cairo', fontSize: 12, color: AppColors.primaryDark),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 12),
                           for (var index = 0; index < _items.length; index++) _buildItemCard(index),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 10),
                           OutlinedButton.icon(
                             onPressed: _showProductPicker,
                             icon: const Icon(Icons.add_rounded, size: 19),
-                            label: const Text('إضافة صنف للطلب', style: TextStyle(fontFamily: 'Cairo')),
+                            label: const Text('إضافة صنف للطلب'),
                           ),
                         ],
                       ),
                     ),
                     SafeArea(
                       top: false,
-                      child: Padding(
+                      child: Container(
                         padding: const EdgeInsets.all(16),
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          boxShadow: [BoxShadow(color: Color(0x12000000), blurRadius: 10, offset: Offset(0, -3))],
+                        ),
                         child: ElevatedButton.icon(
                           onPressed: _isSaving ? null : _save,
-                          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(52)),
+                          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
                           icon: _isSaving
                               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                               : const Icon(Icons.save_rounded),
-                          label: Text(_isSaving ? 'جارٍ الحفظ...' : 'حفظ تعديلات الطلب', style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold)),
+                          label: Text(_isSaving ? 'جارٍ الحفظ...' : 'حفظ تعديلات الطلب'),
                         ),
                       ),
                     ),
@@ -294,30 +315,30 @@ class _EditOrderScreenState extends State<EditOrderScreen> {
             children: [
               const Icon(Icons.inventory_2_rounded, color: AppColors.primary, size: 20),
               const SizedBox(width: 8),
-              Expanded(child: Text(item.name, style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary))),
-              IconButton(tooltip: 'حذف الصنف', icon: const Icon(Icons.delete_outline_rounded, color: AppColors.danger), onPressed: () => setState(() { _items.removeAt(index).dispose(); })),
+              Expanded(child: Text(item.name, style: const TextStyle(fontFamily: 'Cairo', fontSize: 14.5, fontWeight: FontWeight.bold))),
+              IconButton(
+                tooltip: 'حذف الصنف',
+                icon: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
+                onPressed: () => setState(() => _items.removeAt(index).dispose()),
+              ),
             ],
           ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: item.quantity,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: InputDecoration(labelText: 'الكمية', suffixText: item.unit, isDense: true, border: const OutlineInputBorder()),
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Icon(Icons.sticky_note_2_outlined, size: 18, color: AppColors.textSecondary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: item.note,
-                  decoration: const InputDecoration(labelText: 'ملاحظة', isDense: true, border: const OutlineInputBorder()),
-                ),
-              ),
-            ],
+          const SizedBox(height: 10),
+          AppNumericField(
+            controller: item.quantity,
+            label: 'الكمية المطلوبة *',
+            unit: item.unit,
+            dialogTitle: 'تعديل كمية: ${item.name}',
+            quickAddValues: const [1, 5, 10, 25],
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: item.note,
+            decoration: const InputDecoration(
+              labelText: 'ملاحظة على الصنف (اختياري)',
+              prefixIcon: Icon(Icons.sticky_note_2_outlined, size: 18),
+              isDense: true,
+            ),
           ),
         ],
       ),

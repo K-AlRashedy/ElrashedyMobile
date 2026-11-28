@@ -1,10 +1,10 @@
 name: elrashedy_erp
 description: "Al Rashedy ERP Mobile — Smart, optimized ERP companion for mobile devices."
 publish_to: "none"
-version: 1.1.0+3
+version: 1.2.0+2010
 
 environment:
-  sdk: ^3.13.7
+  sdk: ">=3.5.0 <4.0.0"
 
 dependencies:
   flutter:

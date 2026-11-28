@@ -65,6 +65,7 @@ class OrderModel {
   final String status;
   final String sendStatus;
   final String receiveStatus;
+  final String revStatus;
   final String user;
   final int itemsCount;
   final List<OrderProductModel> items;
@@ -79,6 +80,7 @@ class OrderModel {
     required this.status,
     required this.sendStatus,
     required this.receiveStatus,
+    this.revStatus = '',
     required this.user,
     required this.itemsCount,
     required this.items,
@@ -99,6 +101,7 @@ class OrderModel {
       status: json['status'] as String? ?? 'approved',
       sendStatus: json['s_status'] as String? ?? json['status'] as String? ?? 'approved',
       receiveStatus: json['r_status'] as String? ?? json['r_status_legacy'] as String? ?? 'approved',
+      revStatus: json['rev_status'] as String? ?? '',
       user: json['user'] as String? ?? '',
       itemsCount: json['items_count'] as int? ?? rawItems.length,
       items: rawItems

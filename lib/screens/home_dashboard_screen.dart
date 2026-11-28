@@ -1,18 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../core/constants/colors.dart';
 import '../core/navigation/mobile_router.dart';
+import '../core/network/api_client.dart';
+import '../core/services/app_update_service.dart';
 import '../models/nav_item_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/order_provider.dart';
+import '../widgets/app_feedback.dart';
+import 'hr/attendance_screen.dart';
 import 'orders/create_order_screen.dart';
 import 'orders/orders_list_screen.dart';
 import 'products/products_catalog_screen.dart';
+import 'reports/reports_hub_screen.dart';
 import 'safe/safe_screen.dart';
-import 'hr/attendance_screen.dart';
 import 'server_login_screen.dart';
-import '../core/services/app_update_service.dart';
-import '../core/network/api_client.dart';
+import 'settings/settings_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
   const HomeDashboardScreen({super.key});
@@ -22,14 +26,17 @@ class HomeDashboardScreen extends StatefulWidget {
 }
 
 class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
-  int _currentNavIndex = 0;
+  final TextEditingController _navSearchCtrl = TextEditingController();
+  String _navQuery = '';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      context.read<OrderProvider>().loadBootstrapBranches();
-      context.read<OrderProvider>().loadCatalog();
+      final orderProvider = context.read<OrderProvider>();
+      context.read<AuthProvider>().refreshSession();
+      orderProvider.loadBootstrapBranches();
+      orderProvider.loadCatalog();
 
       try {
         final api = context.read<ApiClient>();
@@ -41,46 +48,31 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    _navSearchCtrl.dispose();
+    super.dispose();
+  }
+
   void _handleItemTap(NavItemModel item) {
     MobileRouter.openNavItem(context, item);
   }
 
-  void _showLogoutConfirmDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text(
-            'تسجيل الخروج',
-            style: TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold),
-          ),
-          content: const Text(
-            'هل أنت متأكد من رغبتك في تسجيل الخروج من التطبيق؟',
-            style: TextStyle(fontFamily: 'Cairo', fontSize: 13),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('إلغاء', style: TextStyle(fontFamily: 'Cairo', color: AppColors.textSecondary)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-              onPressed: () async {
-                Navigator.of(ctx).pop();
-                await context.read<AuthProvider>().logout();
-                if (mounted) {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (_) => const ServerLoginScreen()),
-                  );
-                }
-              },
-              child: const Text('خروج', style: TextStyle(fontFamily: 'Cairo')),
-            ),
-          ],
-        );
-      },
+  Future<void> _showLogoutConfirmDialog() async {
+    final confirmed = await AppConfirmDialog.show(
+      context,
+      title: 'تسجيل الخروج',
+      message: 'هل أنت متأكد من رغبتك في تسجيل الخروج من التطبيق؟',
+      confirmLabel: 'خروج',
+      isDestructive: true,
     );
+    if (!confirmed || !mounted) return;
+    await context.read<AuthProvider>().logout();
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const ServerLoginScreen()),
+      );
+    }
   }
 
   @override
@@ -89,92 +81,89 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     final user = auth.user;
     final navGroups = auth.navGroups;
 
+    final q = _navQuery.trim().toLowerCase();
+    final filteredGroups = q.isEmpty
+        ? navGroups
+        : navGroups
+            .map((g) {
+              final groupMatches = g.title.toLowerCase().contains(q) || g.hint.toLowerCase().contains(q);
+              final matchedItems = groupMatches
+                  ? g.items
+                  : g.items
+                      .where((i) =>
+                          i.title.toLowerCase().contains(q) ||
+                          (i.url ?? '').toLowerCase().contains(q))
+                      .toList();
+              return NavGroupModel(
+                id: g.id,
+                title: g.title,
+                icon: g.icon,
+                color: g.color,
+                hint: g.hint,
+                items: matchedItems,
+              );
+            })
+            .where((g) => g.items.isNotEmpty)
+            .toList();
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 32,
-              height: 32,
+              width: 34,
+              height: 34,
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 color: Colors.white,
                 border: Border.all(color: AppColors.border),
               ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 child: Image.asset('assets/images/logo_erp.png', fit: BoxFit.cover),
               ),
             ),
             const SizedBox(width: 10),
-            const Text(
-              'الرشيدي ERP',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
+            const Text('الرشيدي ERP'),
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.insights_rounded, size: 22),
+            tooltip: 'التقارير والمؤشرات',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ReportsHubScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, size: 22),
+            tooltip: 'الإعدادات',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout_rounded, color: AppColors.error, size: 22),
             tooltip: 'تسجيل الخروج',
             onPressed: _showLogoutConfirmDialog,
           ),
-          const SizedBox(width: 8),
         ],
       ),
-      body: _buildCurrentTab(auth, user, navGroups),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentNavIndex,
-        onTap: (index) {
-          if (index == 1) {
-            // Quick jump to Create Order
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const CreateOrderScreen()),
-            );
-          } else if (index == 2) {
-            // Quick jump to Orders List
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const OrdersListScreen()),
-            );
-          } else {
-            setState(() => _currentNavIndex = index);
+      body: RefreshIndicator(
+        color: AppColors.primary,
+        onRefresh: () async {
+          await context.read<AuthProvider>().refreshSession();
+          if (mounted) {
+            await context.read<OrderProvider>().loadBootstrapBranches();
           }
         },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard_rounded),
-            label: 'الرئيسية',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.add_circle_outline_rounded),
-            activeIcon: Icon(Icons.add_circle_rounded),
-            label: 'رفع طلب',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.receipt_long_outlined),
-            activeIcon: Icon(Icons.receipt_long_rounded),
-            label: 'الطلبات',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCurrentTab(AuthProvider auth, dynamic user, List<NavGroupModel> navGroups) {
-    return RefreshIndicator(
-      onRefresh: () async {
-        await context.read<AuthProvider>().tryAutoLogin();
-        await context.read<OrderProvider>().loadBootstrapBranches();
-      },
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
           children: [
-            // User Profile Hero Card
+            // Hero Profile Card
             Container(
               padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
@@ -184,12 +173,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                   end: Alignment.bottomLeft,
                 ),
                 borderRadius: BorderRadius.circular(22),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.secondary.withOpacity(0.2),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
-                  ),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x280F172A), blurRadius: 16, offset: Offset(0, 6)),
                 ],
               ),
               child: Row(
@@ -215,45 +200,48 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          user?.displayName ?? 'المستخدم',
+                          'مرحباً، ${user?.displayName ?? 'المستخدم'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             fontFamily: 'Cairo',
-                            fontSize: 16,
+                            fontSize: 16.5,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Row(
+                        const SizedBox(height: 5),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                               decoration: BoxDecoration(
-                                color: AppColors.primary.withOpacity(0.25),
+                                color: AppColors.primary.withValues(alpha: 0.28),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
-                                user?.isSuperuser == true ? 'مدير عام' : 'مستخدم مصرح',
-                                style: const TextStyle(
-                                  fontFamily: 'Cairo',
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  color: Color(0xFFC0E7A6),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                user?.branchName ?? 'المركز الرئيسي',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                                user?.isSuperuser == true ? 'مدير عام' : 'صلاحيات مفعلة',
                                 style: const TextStyle(
                                   fontFamily: 'Cairo',
                                   fontSize: 11,
-                                  color: AppColors.textMuted,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFFC8F0AC),
                                 ),
                               ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.storefront_rounded, size: 14, color: Colors.white70),
+                                const SizedBox(width: 4),
+                                Text(
+                                  user?.branchName ?? 'المركز الرئيسي',
+                                  style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, color: Colors.white70),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -264,40 +252,32 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
               ),
             ),
 
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
 
-            // High Priority Actions Header
+            // Quick Actions
             const Row(
               children: [
-                Icon(Icons.bolt_rounded, color: AppColors.accentAmber, size: 20),
+                Icon(Icons.bolt_rounded, color: AppColors.accentAmber, size: 21),
                 SizedBox(width: 6),
                 Text(
-                  'الإجراءات السريعة (Mobile-First)',
-                  style: TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
-                  ),
+                  'الوصول السريع',
+                  style: TextStyle(fontFamily: 'Cairo', fontSize: 15.5, fontWeight: FontWeight.w800),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
 
-            // Hero Fast Buttons Grid
             Row(
               children: [
                 Expanded(
                   child: _buildActionTile(
-                    title: 'إنشاء طلب جديد',
+                    title: 'إنشاء طلب',
                     subtitle: 'صرف بضاعة وخامات',
                     icon: Icons.add_shopping_cart_rounded,
-                    gradient: const [Color(0xFF4A9323), Color(0xFF3A7220)],
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const CreateOrderScreen(initialType: 'order')),
-                      );
-                    },
+                    gradient: const [AppColors.primary, AppColors.primaryDark],
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreateOrderScreen(initialType: 'order')),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -307,135 +287,152 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                     subtitle: 'تحويل بين الفروع',
                     icon: Icons.local_shipping_rounded,
                     gradient: const [Color(0xFF2563EB), Color(0xFF1D4ED8)],
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const CreateOrderScreen(initialType: 'transfer')),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildSecondaryTile(
-                    title: 'متابعة الطلبات',
-                    icon: Icons.receipt_long_rounded,
-                    color: const Color(0xFF7C3AED),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const OrdersListScreen()),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildSecondaryTile(
-                    title: 'جدول الأصناف',
-                    icon: Icons.inventory_2_rounded,
-                    color: const Color(0xFFD97706),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const ProductsCatalogScreen()),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildSecondaryTile(
-                    title: 'حضور وانصراف',
-                    icon: Icons.access_time_filled_rounded,
-                    color: const Color(0xFF0284C7),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const AttendanceScreen()),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildSecondaryTile(
-                    title: 'الخزينة والورديات',
-                    icon: Icons.account_balance_wallet_rounded,
-                    color: const Color(0xFF059669),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const SafeScreen()),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 28),
-
-            // Dynamic Permissions Sections from ERP build_nav
-            Row(
-              children: [
-                const Icon(Icons.shield_outlined, color: AppColors.primary, size: 20),
-                const SizedBox(width: 6),
-                const Text(
-                  'أقسام النظام المتاحة لصلاحياتك',
-                  style: TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceMuted,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${navGroups.length} مجموعات',
-                    style: const TextStyle(
-                      fontFamily: 'Cairo',
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textSecondary,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const CreateOrderScreen(initialType: 'transfer')),
                     ),
                   ),
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildSecondaryTile(
+                    title: 'الطلبات',
+                    icon: Icons.receipt_long_rounded,
+                    color: AppColors.accentPurple,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const OrdersListScreen()),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildSecondaryTile(
+                    title: 'الأصناف',
+                    icon: Icons.inventory_2_rounded,
+                    color: AppColors.accentAmber,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const ProductsCatalogScreen()),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildSecondaryTile(
+                    title: 'الحضور',
+                    icon: Icons.access_time_filled_rounded,
+                    color: AppColors.info,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const AttendanceScreen()),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildSecondaryTile(
+                    title: 'الخزينة',
+                    icon: Icons.account_balance_wallet_rounded,
+                    color: AppColors.success,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SafeScreen()),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 22),
+
+            // Quick Section Search
+            Row(
+              children: [
+                const Icon(Icons.apps_rounded, color: AppColors.primary, size: 20),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'أقسام النظام',
+                    style: TextStyle(fontFamily: 'Cairo', fontSize: 15.5, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Text(
+                    '${filteredGroups.length} أقسام',
+                    style: const TextStyle(fontFamily: 'Cairo', fontSize: 11.5, fontWeight: FontWeight.bold, color: AppColors.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            TextField(
+              controller: _navSearchCtrl,
+              decoration: InputDecoration(
+                hintText: 'ابحث عن شاشة أو قسم (مثال: جرد، رواتب، مصروفات)...',
+                prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary),
+                suffixIcon: _navQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear_rounded, size: 19),
+                        onPressed: () {
+                          _navSearchCtrl.clear();
+                          setState(() => _navQuery = '');
+                        },
+                      )
+                    : null,
+              ),
+              onChanged: (v) => setState(() => _navQuery = v),
+            ),
             const SizedBox(height: 12),
 
-            // Dynamic Groups List
-            if (navGroups.isEmpty)
+            if (filteredGroups.isEmpty)
               Container(
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: AppColors.border),
                 ),
-                child: const Center(
+                child: Center(
                   child: Text(
-                    'لا توجد أقسام مفعلة لهذا الحساب حالياً.',
-                    style: TextStyle(fontFamily: 'Cairo', color: AppColors.textSecondary),
+                    _navQuery.isNotEmpty ? 'لا توجد شاشات مطابقة للبحث "$_navQuery"' : 'لا توجد أقسام مفعلة لهذا الحساب حالياً.',
+                    style: const TextStyle(fontFamily: 'Cairo', color: AppColors.textSecondary),
                   ),
                 ),
               )
             else
-              ...navGroups.map((group) => _buildDynamicGroupCard(group)),
-
-            const SizedBox(height: 40),
+              ...filteredGroups.map((group) => _buildDynamicGroupCard(group, forceExpand: _navQuery.isNotEmpty)),
           ],
         ),
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: 0,
+        onTap: (index) {
+          if (index == 1) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const CreateOrderScreen()),
+            );
+          } else if (index == 2) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const OrdersListScreen()),
+            );
+          }
+        },
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'الرئيسية'),
+          BottomNavigationBarItem(icon: Icon(Icons.add_circle_rounded), label: 'رفع طلب'),
+          BottomNavigationBarItem(icon: Icon(Icons.receipt_long_rounded), label: 'الطلبات'),
+        ],
       ),
     );
   }
@@ -451,18 +448,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             gradient: LinearGradient(colors: gradient, begin: Alignment.topRight, end: Alignment.bottomLeft),
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(20),
             boxShadow: [
-              BoxShadow(
-                color: gradient.first.withOpacity(0.3),
-                blurRadius: 12,
-                offset: const Offset(0, 5),
-              ),
+              BoxShadow(color: gradient.first.withValues(alpha: 0.28), blurRadius: 12, offset: const Offset(0, 5)),
             ],
           ),
           child: Column(
@@ -471,29 +464,21 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
+                  color: Colors.white.withValues(alpha: 0.22),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, color: Colors.white, size: 24),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               Text(
                 title,
-                style: const TextStyle(
-                  fontFamily: 'Cairo',
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
+                style: const TextStyle(fontFamily: 'Cairo', fontSize: 15.5, fontWeight: FontWeight.w800, color: Colors.white),
               ),
-              const SizedBox(height: 2),
               Text(
                 subtitle,
-                style: TextStyle(
-                  fontFamily: 'Cairo',
-                  fontSize: 11,
-                  color: Colors.white.withOpacity(0.85),
-                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontFamily: 'Cairo', fontSize: 11.5, color: Colors.white.withValues(alpha: 0.88)),
               ),
             ],
           ),
@@ -523,23 +508,20 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
           child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(10),
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(icon, color: color, size: 20),
+                child: Icon(icon, color: color, size: 21),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
-                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
                 ),
               ),
             ],
@@ -549,9 +531,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     );
   }
 
-  Widget _buildDynamicGroupCard(NavGroupModel group) {
+  Widget _buildDynamicGroupCard(NavGroupModel group, {bool forceExpand = false}) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
@@ -560,59 +542,58 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          initiallyExpanded: group.id == 'orders' || group.id == 'sales',
+          key: PageStorageKey('${group.id}_$forceExpand'),
+          initiallyExpanded: forceExpand || group.id == 'orders' || group.id == 'sales',
           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           leading: Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: group.resolvedColor.withOpacity(0.12),
+              color: group.resolvedColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(group.iconData, color: group.resolvedColor, size: 22),
           ),
           title: Text(
             group.title,
-            style: const TextStyle(
-              fontFamily: 'Cairo',
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-              color: AppColors.textPrimary,
-            ),
+            style: const TextStyle(fontFamily: 'Cairo', fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.textPrimary),
           ),
           subtitle: group.hint.isNotEmpty
-              ? Text(
-                  group.hint,
-                  style: const TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 11,
-                    color: AppColors.textSecondary,
-                  ),
-                )
+              ? Text(group.hint, style: const TextStyle(fontFamily: 'Cairo', fontSize: 11.5, color: AppColors.textSecondary))
               : null,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: group.items.map((item) {
-                  return ActionChip(
-                    avatar: Icon(item.iconData, size: 16, color: group.resolvedColor),
-                    label: Text(
-                      item.title,
-                      style: const TextStyle(
-                        fontFamily: 'Cairo',
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary,
+                  return InkWell(
+                    onTap: () => _handleItemTap(item),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceSubtle,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(item.iconData, size: 17, color: group.resolvedColor),
+                          const SizedBox(width: 6),
+                          Text(
+                            item.title,
+                            style: const TextStyle(
+                              fontFamily: 'Cairo',
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    backgroundColor: AppColors.surfaceMuted,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      side: const BorderSide(color: AppColors.border),
-                    ),
-                    onPressed: () => _handleItemTap(item),
                   );
                 }).toList(),
               ),

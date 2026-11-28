@@ -3,10 +3,18 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants/colors.dart';
 import '../../core/network/api_client.dart';
-import '../../widgets/fast_quantity_dial_sheet.dart';
+import '../../widgets/app_feedback.dart';
+import '../../widgets/numeric_keypad_sheet.dart';
+
+double _parseHours(dynamic raw, {double fallback = 0.0}) {
+  if (raw == null) return fallback;
+  if (raw is num) return raw.toDouble();
+  return double.tryParse(raw.toString()) ?? fallback;
+}
 
 class WorkerAttendanceState {
   final int id;
+  final int? attendanceId;
   final String name;
   final String jobTitle;
   final String shiftType;
@@ -19,6 +27,7 @@ class WorkerAttendanceState {
 
   WorkerAttendanceState({
     required this.id,
+    this.attendanceId,
     required this.name,
     required this.jobTitle,
     required this.shiftType,
@@ -32,14 +41,15 @@ class WorkerAttendanceState {
 
   factory WorkerAttendanceState.fromJson(Map<String, dynamic> json) {
     return WorkerAttendanceState(
-      id: json['id'] as int,
+      id: (json['id'] as num).toInt(),
+      attendanceId: (json['attendance_id'] as num?)?.toInt(),
       name: json['name']?.toString() ?? '',
       jobTitle: json['job_title']?.toString() ?? 'عامل / موظف',
       shiftType: json['shift_type']?.toString() ?? 'all',
       status: json['status']?.toString() ?? 'present',
-      workHours: (json['work_hours'] as num?)?.toDouble() ?? 10.0,
-      overtimeHours: (json['overtime_hours'] as num?)?.toDouble() ?? 0.0,
-      delayHours: (json['delay_hours'] as num?)?.toDouble() ?? 0.0,
+      workHours: _parseHours(json['work_hours'], fallback: 10.0),
+      overtimeHours: _parseHours(json['overtime_hours']),
+      delayHours: _parseHours(json['delay_hours']),
       notes: json['notes']?.toString() ?? '',
       isSaved: json['is_saved'] == true,
     );
@@ -49,15 +59,18 @@ class WorkerAttendanceState {
     return {
       'employee_id': id,
       'status': status,
-      'overtime_hours': overtimeHours,
-      'delay_hours': delayHours,
+      'work_hours': status == 'present' ? workHours : 0.0,
+      'overtime_hours': status == 'present' ? overtimeHours : 0.0,
+      'delay_hours': status == 'present' ? delayHours : 0.0,
       'notes': notes,
     };
   }
 }
 
 class AttendanceScreen extends StatefulWidget {
-  const AttendanceScreen({super.key});
+  final bool openRecordsSheet;
+
+  const AttendanceScreen({super.key, this.openRecordsSheet = false});
 
   @override
   State<AttendanceScreen> createState() => _AttendanceScreenState();
@@ -71,17 +84,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   DateTime _selectedDate = DateTime.now();
   int? _selectedBranchId;
   String _selectedBranchName = 'الفرع الحالي';
+  String _selectedShiftFilter = 'all';
   List<Map<String, dynamic>> _branches = [];
   bool _canEdit = true;
 
   List<WorkerAttendanceState> _workers = [];
   String _searchQuery = '';
   final TextEditingController _searchCtrl = TextEditingController();
+  bool _didAutoOpenRecords = false;
+  bool _hasUnsavedChanges = false;
 
   @override
   void initState() {
     super.initState();
-    _fetchAttendance();
+    _fetchAttendance().then((_) {
+      if (widget.openRecordsSheet && !_didAutoOpenRecords && mounted) {
+        _didAutoOpenRecords = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _openDetailedRecordsSheet();
+        });
+      }
+    });
   }
 
   @override
@@ -102,17 +125,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     try {
       final api = context.read<ApiClient>();
-      final dateStr = _formatDate(_selectedDate);
-      String url = '/api/v1/attendance/branch/?date=$dateStr';
-      if (_selectedBranchId != null) {
-        url += '&branch_id=$_selectedBranchId';
-      }
+      final params = <String, String>{
+        'date': _formatDate(_selectedDate),
+        'page_size': '100',
+        if (_selectedBranchId != null) 'branch_id': '$_selectedBranchId',
+        if (_selectedShiftFilter != 'all') 'shift': _selectedShiftFilter,
+      };
 
-      final res = await api.get(url);
+      final res = await api.get('/api/v1/attendance/branch/', queryParams: params);
       if (res is Map<String, dynamic> && res['ok'] == true) {
         final bInfo = res['branch'] as Map<String, dynamic>?;
         if (bInfo != null) {
-          _selectedBranchId = bInfo['id'] as int?;
+          _selectedBranchId = (bInfo['id'] as num?)?.toInt();
           _selectedBranchName = bInfo['name']?.toString() ?? 'الفرع';
         }
 
@@ -122,8 +146,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _canEdit = res['can_edit'] != false;
 
         final empRaw = res['employees'] as List<dynamic>? ?? [];
-        _workers = empRaw.map((e) => WorkerAttendanceState.fromJson(e as Map<String, dynamic>)).toList();
-      } else {
+        _workers = empRaw
+            .map((e) => WorkerAttendanceState.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+        _hasUnsavedChanges = false;
+      } else if (res is Map<String, dynamic>) {
         _error = res['error']?.toString() ?? 'تعذر تحميل كشف الحضور.';
       }
     } catch (e) {
@@ -133,11 +160,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  Future<bool> _confirmDiscardIfDirty() async {
+    if (!_hasUnsavedChanges) return true;
+    return AppConfirmDialog.show(
+      context,
+      title: 'تغييرات غير محفوظة',
+      message:
+          'لديك تعديلات في كشف الحضور لم تُحفظ بعد. هل تريد تجاهلها والمتابعة؟',
+      confirmLabel: 'تجاهل التعديلات',
+      isDestructive: true,
+    );
+  }
+
   Future<void> _saveAttendance() async {
     if (!_canEdit) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('غير مسموح بالتعديل على هذا اليوم.')),
-      );
+      AppFeedback.showError(context, 'غير مسموح بالتعديل على هذا اليوم.');
       return;
     }
 
@@ -155,39 +192,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final res = await api.post('/api/v1/attendance/branch/save/', body: payload);
       if (res is Map<String, dynamic> && res['ok'] == true) {
         HapticFeedback.heavyImpact();
+        _hasUnsavedChanges = false;
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.check_circle_rounded, color: Colors.white),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      res['message']?.toString() ?? 'تم اعتماد وحفظ الكشف بنجاح.',
-                      style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-              backgroundColor: AppColors.success,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
+          AppFeedback.showSuccess(
+            context,
+            res['message']?.toString() ??
+                'تم اعتماد وحفظ الكشف (${res['saved_count'] ?? _workers.length} سجل) بنجاح.',
           );
         }
         _fetchAttendance();
       } else {
-        throw Exception(res['error'] ?? 'فشل في حفظ الكشف.');
+        throw Exception((res is Map ? res['error'] : null) ?? 'فشل في حفظ الكشف.');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('خطأ أثناء الحفظ: $e', style: const TextStyle(fontFamily: 'Cairo')),
-            backgroundColor: AppColors.danger,
-          ),
-        );
+        AppFeedback.showError(context, 'خطأ أثناء الحفظ: $e');
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);
@@ -197,6 +216,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void _setAllWorkersStatus(String status) {
     HapticFeedback.selectionClick();
     setState(() {
+      _hasUnsavedChanges = true;
       for (final w in _workers) {
         w.status = status;
         if (status == 'present') {
@@ -213,6 +233,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void _resetAllOvertimeDelay() {
     HapticFeedback.selectionClick();
     setState(() {
+      _hasUnsavedChanges = true;
       for (final w in _workers) {
         w.overtimeHours = 0.0;
         w.delayHours = 0.0;
@@ -228,7 +249,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       lastDate: DateTime.now(),
       locale: const Locale('ar'),
     );
-    if (picked != null && picked != _selectedDate) {
+    if (picked != null && picked != _selectedDate && mounted) {
+      if (!await _confirmDiscardIfDirty() || !mounted) return;
       setState(() => _selectedDate = picked);
       _fetchAttendance();
     }
@@ -239,28 +261,61 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final currentVal = isOvertime ? worker.overtimeHours : worker.delayHours;
     final title = isOvertime ? 'ساعات إضافي: ${worker.name}' : 'ساعات تأخير: ${worker.name}';
 
-    final res = await FastQuantityDialSheet.show(
+    final res = await AppNumericKeypadSheet.showDouble(
       context,
       title: title,
       unit: 'ساعة',
       initialValue: currentVal,
+      allowDecimal: true,
+      quickAddValues: isOvertime ? const [0.5, 1, 2, 3] : const [0.25, 0.5, 1, 2],
     );
-    if (res != null) {
+    if (res != null && mounted) {
       setState(() {
+        _hasUnsavedChanges = true;
         if (isOvertime) {
-          worker.overtimeHours = res;
+          worker.overtimeHours = res.clamp(0.0, 24.0);
         } else {
-          worker.delayHours = res;
+          worker.delayHours = res.clamp(0.0, 10.0);
         }
       });
     }
+  }
+
+  Future<void> _editWorkerNoteDialog(WorkerAttendanceState worker) async {
+    final saved = await showDialog<String>(
+      context: context,
+      builder: (_) => _WorkerNoteDialog(
+        workerName: worker.name,
+        initialNote: worker.notes,
+      ),
+    );
+    if (saved != null && mounted) {
+      setState(() {
+        _hasUnsavedChanges = true;
+        worker.notes = saved;
+      });
+    }
+  }
+
+  void _openDetailedRecordsSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => _DetailedAttendanceRecordsSheet(
+        branches: _branches,
+        initialBranchId: _selectedBranchId,
+        workers: _workers,
+        onChanged: _fetchAttendance,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final isToday = _formatDate(_selectedDate) == _formatDate(DateTime.now());
 
-    // Compute live counters
     int presentCount = 0;
     int absentCount = 0;
     int leaveCount = 0;
@@ -285,7 +340,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           w.jobTitle.toLowerCase().contains(_searchQuery.toLowerCase());
     }).toList();
 
-    return Scaffold(
+    return PopScope(
+      canPop: !_hasUnsavedChanges,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final navigator = Navigator.of(context);
+        if (await _confirmDiscardIfDirty() && mounted) {
+          navigator.pop();
+        }
+      },
+      child: Scaffold(
       backgroundColor: const Color(0xFFF6F8FA),
       appBar: AppBar(
         title: Column(
@@ -302,6 +366,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history_edu_rounded, size: 21),
+            tooltip: 'سجل الحضور التفصيلي',
+            onPressed: _openDetailedRecordsSheet,
+          ),
           IconButton(
             icon: const Icon(Icons.calendar_today_rounded, size: 20),
             tooltip: 'تغيير التاريخ',
@@ -338,13 +407,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 )
               : Column(
                   children: [
-                    // Top Dashboard & Filters Bar
                     _buildHeaderBar(isToday, presentCount, absentCount, leaveCount, sumOvertime, sumDelay),
-
-                    // Quick Master Actions (⚡ حضور الكل) & Search
                     _buildQuickActionBar(),
-
-                    // Workers Cards List
                     Expanded(
                       child: filteredWorkers.isEmpty
                           ? Center(
@@ -363,14 +427,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           : ListView.builder(
                               padding: const EdgeInsets.fromLTRB(14, 8, 14, 100),
                               itemCount: filteredWorkers.length,
-                              itemBuilder: (ctx, index) {
-                                return _buildWorkerCard(filteredWorkers[index]);
-                              },
+                              itemBuilder: (ctx, index) => _buildWorkerCard(filteredWorkers[index]),
                             ),
                     ),
                   ],
                 ),
       bottomSheet: !_isLoading && _error == null ? _buildStickySaveBar(presentCount, sumOvertime, sumDelay) : null,
+    ),
     );
   }
 
@@ -387,7 +450,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: AppColors.secondary.withOpacity(0.18),
+            color: AppColors.secondary.withValues(alpha: 0.18),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -395,14 +458,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ),
       child: Column(
         children: [
-          // Branch & Date Bar
           Row(
             children: [
               if (_branches.length > 1) ...[
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.12),
+                    color: Colors.white.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: DropdownButtonHideUnderline(
@@ -413,12 +475,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
                       items: _branches.map((b) {
                         return DropdownMenuItem<int>(
-                          value: b['id'] as int,
+                          value: (b['id'] as num).toInt(),
                           child: Text(b['name']?.toString() ?? ''),
                         );
                       }).toList(),
-                      onChanged: (val) {
-                        if (val != null) {
+                      onChanged: (val) async {
+                        if (val != null && val != _selectedBranchId) {
+                          if (!await _confirmDiscardIfDirty() || !mounted) return;
                           setState(() => _selectedBranchId = val);
                           _fetchAttendance();
                         }
@@ -439,35 +502,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   ),
                 ),
               ),
-              InkWell(
-                onTap: _pickDate,
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.edit_calendar_rounded, color: Colors.white70, size: 14),
-                      const SizedBox(width: 4),
-                      Text(
-                        isToday ? 'اليوم' : _formatDate(_selectedDate),
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'Cairo'),
-                      ),
-                    ],
-                  ),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedShiftFilter,
+                  dropdownColor: AppColors.secondaryLight,
+                  style: const TextStyle(color: Colors.white, fontFamily: 'Cairo', fontSize: 11),
+                  icon: const Icon(Icons.schedule_rounded, color: Colors.white70, size: 15),
+                  items: const [
+                    DropdownMenuItem(value: 'all', child: Text('كل الورديات')),
+                    DropdownMenuItem(value: 'morning', child: Text('صباحي')),
+                    DropdownMenuItem(value: 'evening', child: Text('مسائي')),
+                  ],
+                  onChanged: (v) async {
+                    if (v != null && v != _selectedShiftFilter) {
+                      if (!await _confirmDiscardIfDirty() || !mounted) return;
+                      setState(() => _selectedShiftFilter = v);
+                      _fetchAttendance();
+                    }
+                  },
                 ),
               ),
             ],
           ),
-
           const SizedBox(height: 10),
           const Divider(color: Colors.white12, height: 1),
           const SizedBox(height: 10),
-
-          // Live Counters Row (Horizontal scroll to prevent any pixel overflow)
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
@@ -498,9 +557,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.2),
+        color: color.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.4)),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -513,7 +572,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               fontFamily: 'Cairo',
               fontSize: 11,
               fontWeight: FontWeight.bold,
-              color: Colors.white.withOpacity(0.95),
+              color: Colors.white.withValues(alpha: 0.95),
             ),
           ),
         ],
@@ -525,7 +584,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
@@ -540,7 +599,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       child: Row(
         children: [
-          // ⚡ Master "حضور الكل (10س)" Button
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
@@ -570,8 +628,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             icon: const Icon(Icons.rotate_left_rounded, size: 18, color: AppColors.textSecondary),
           ),
           const SizedBox(width: 6),
-
-          // Search Field
           Expanded(
             child: Container(
               height: 40,
@@ -619,15 +675,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isPresent
-              ? AppColors.primary.withOpacity(0.35)
+              ? AppColors.primary.withValues(alpha: 0.35)
               : isAbsent
-                  ? AppColors.error.withOpacity(0.3)
-                  : AppColors.warning.withOpacity(0.3),
+                  ? AppColors.error.withValues(alpha: 0.3)
+                  : AppColors.warning.withValues(alpha: 0.3),
           width: 1.2,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 6,
             offset: const Offset(0, 2),
           ),
@@ -638,7 +694,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Top Row: Worker info & current active badge
             Row(
               children: [
                 CircleAvatar(
@@ -687,7 +742,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
                 ),
-                // Work Hours badge
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'ملاحظات',
+                  onPressed: _canEdit ? () => _editWorkerNoteDialog(worker) : null,
+                  icon: Icon(
+                    worker.notes.isNotEmpty ? Icons.sticky_note_2_rounded : Icons.note_add_outlined,
+                    size: 18,
+                    color: worker.notes.isNotEmpty ? AppColors.accentAmber : AppColors.textMuted,
+                  ),
+                ),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
@@ -695,7 +759,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    isPresent ? '10 ساعات عمل' : (isAbsent ? '0 ساعات (غياب)' : '0 ساعات (إجازة)'),
+                    isPresent ? '${worker.workHours.toStringAsFixed(0)} س عمل' : (isAbsent ? 'غياب' : 'إجازة'),
                     style: TextStyle(
                       fontFamily: 'Cairo',
                       fontSize: 10,
@@ -706,10 +770,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
               ],
             ),
-
+            if (worker.notes.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                'ملاحظة: ${worker.notes}',
+                style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textSecondary),
+              ),
+            ],
             const SizedBox(height: 10),
-
-            // 3-Way Segmented Status Selector (حضر / غياب / أجازة)
             Container(
               decoration: BoxDecoration(
                 color: const Color(0xFFF1F5F9),
@@ -741,7 +809,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     child: _buildStatusSegmentButton(
                       worker: worker,
                       statusKey: 'leave',
-                      label: 'أجازة',
+                      label: 'إجازة',
                       icon: Icons.beach_access_rounded,
                       activeColor: AppColors.accentAmber,
                     ),
@@ -749,8 +817,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ],
               ),
             ),
-
-            // If Present: Overtime & Delay Operations Drawer
             if (isPresent) ...[
               const SizedBox(height: 10),
               Container(
@@ -762,7 +828,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
                 child: Column(
                   children: [
-                    // Overtime Row (ساعات إضافي)
                     _buildHoursModifierRow(
                       worker: worker,
                       title: 'إضافي',
@@ -772,10 +837,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       isOvertime: true,
                       presets: const [1.0, 2.0, 3.0, 4.0, 5.0],
                     ),
-
                     const Divider(height: 14, color: Color(0xFFE2E8F0)),
-
-                    // Delay Row (ساعات تأخير)
                     _buildHoursModifierRow(
                       worker: worker,
                       title: 'تأخير',
@@ -809,6 +871,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           ? () {
               HapticFeedback.selectionClick();
               setState(() {
+                _hasUnsavedChanges = true;
                 worker.status = statusKey;
                 if (statusKey == 'present') {
                   worker.workHours = 10.0;
@@ -830,7 +893,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           boxShadow: isSelected
               ? [
                   BoxShadow(
-                    color: activeColor.withOpacity(0.3),
+                    color: activeColor.withValues(alpha: 0.3),
                     blurRadius: 4,
                     offset: const Offset(0, 2),
                   ),
@@ -870,152 +933,153 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     required bool isOvertime,
     required List<double> presets,
   }) {
-    return Row(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      alignment: WrapAlignment.spaceBetween,
       children: [
-        // Title & Value Display
         Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 14, color: color),
+            Icon(icon, size: 15, color: color),
             const SizedBox(width: 4),
             Text(
               '$title:',
-              style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+              style: const TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 6),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(6),
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(7),
               ),
               child: Text(
                 value == 0 ? '0 س' : '${value.toStringAsFixed(value == value.roundToDouble() ? 0 : 2)} س',
                 style: TextStyle(
                   fontFamily: 'Cairo',
-                  fontSize: 11,
+                  fontSize: 11.5,
                   fontWeight: FontWeight.bold,
                   color: color,
                 ),
               ),
             ),
-          ],
-        ),
-        const SizedBox(width: 6),
-
-        // Quick Steppers [-] and [+]
-        InkWell(
-          onTap: _canEdit
-              ? () {
-                  HapticFeedback.selectionClick();
-                  setState(() {
-                    final step = isOvertime ? 0.5 : 0.25;
-                    if (isOvertime) {
-                      worker.overtimeHours = (worker.overtimeHours - step).clamp(0.0, 24.0);
-                    } else {
-                      worker.delayHours = (worker.delayHours - step).clamp(0.0, 10.0);
-                    }
-                  });
-                }
-              : null,
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Icon(Icons.remove, size: 14, color: AppColors.textSecondary),
-          ),
-        ),
-        const SizedBox(width: 4),
-        InkWell(
-          onTap: _canEdit
-              ? () {
-                  HapticFeedback.selectionClick();
-                  setState(() {
-                    final step = isOvertime ? 0.5 : 0.25;
-                    if (isOvertime) {
-                      worker.overtimeHours = (worker.overtimeHours + step).clamp(0.0, 24.0);
-                    } else {
-                      worker.delayHours = (worker.delayHours + step).clamp(0.0, 10.0);
-                    }
-                  });
-                }
-              : null,
-          borderRadius: BorderRadius.circular(6),
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Icon(Icons.add, size: 14, color: AppColors.textSecondary),
-          ),
-        ),
-
-        const Spacer(),
-
-        // Quick Preset Chips (+1, +2, +3...)
-        ...presets.take(3).map((p) {
-          final label = p == 0.25
-              ? '¼س'
-              : p == 0.5
-                  ? '½س'
-                  : '+${p.toInt()}س';
-          return Padding(
-            padding: const EdgeInsets.only(left: 3),
-            child: InkWell(
+            const SizedBox(width: 6),
+            InkWell(
               onTap: _canEdit
                   ? () {
                       HapticFeedback.selectionClick();
                       setState(() {
+                        _hasUnsavedChanges = true;
+                        final step = isOvertime ? 0.5 : 0.25;
                         if (isOvertime) {
-                          worker.overtimeHours = p;
+                          worker.overtimeHours = (worker.overtimeHours - step).clamp(0.0, 24.0);
                         } else {
-                          worker.delayHours = p;
+                          worker.delayHours = (worker.delayHours - step).clamp(0.0, 10.0);
                         }
                       });
                     }
                   : null,
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(7),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: color.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: AppColors.border),
                 ),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontFamily: 'Cairo',
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold,
-                    color: color,
+                child: const Icon(Icons.remove, size: 15, color: AppColors.textSecondary),
+              ),
+            ),
+            const SizedBox(width: 4),
+            InkWell(
+              onTap: _canEdit
+                  ? () {
+                      HapticFeedback.selectionClick();
+                      setState(() {
+                        _hasUnsavedChanges = true;
+                        final step = isOvertime ? 0.5 : 0.25;
+                        if (isOvertime) {
+                          worker.overtimeHours = (worker.overtimeHours + step).clamp(0.0, 24.0);
+                        } else {
+                          worker.delayHours = (worker.delayHours + step).clamp(0.0, 10.0);
+                        }
+                      });
+                    }
+                  : null,
+              borderRadius: BorderRadius.circular(7),
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: const Icon(Icons.add, size: 15, color: AppColors.textSecondary),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ...presets.take(3).map((p) {
+              final label = p == 0.25
+                  ? '¼س'
+                  : p == 0.5
+                      ? '½س'
+                      : '+${p.toInt()}س';
+              return Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: InkWell(
+                  onTap: _canEdit
+                      ? () {
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            _hasUnsavedChanges = true;
+                            if (isOvertime) {
+                              worker.overtimeHours = p;
+                            } else {
+                              worker.delayHours = p;
+                            }
+                          });
+                        }
+                      : null,
+                  borderRadius: BorderRadius.circular(7),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(color: color.withValues(alpha: 0.35)),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontFamily: 'Cairo',
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: color,
+                      ),
+                    ),
                   ),
                 ),
+              );
+            }),
+            InkWell(
+              onTap: _canEdit ? () => _openDialpadForField(worker, isOvertime) : null,
+              borderRadius: BorderRadius.circular(7),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Icon(Icons.dialpad_rounded, size: 15, color: color),
               ),
             ),
-          );
-        }),
-
-        // ✏️ Direct Dialpad Button (Zero Keyboard Lag)
-        Padding(
-          padding: const EdgeInsets.only(left: 4),
-          child: InkWell(
-            onTap: _canEdit ? () => _openDialpadForField(worker, isOvertime) : null,
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Icon(Icons.dialpad_rounded, size: 13, color: color),
-            ),
-          ),
+          ],
         ),
       ],
     );
@@ -1029,7 +1093,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         border: const Border(top: BorderSide(color: Color(0xFFE2E8F0))),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.06),
+            color: Colors.black.withValues(alpha: 0.06),
             blurRadius: 10,
             offset: const Offset(0, -3),
           ),
@@ -1089,6 +1153,645 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DetailedAttendanceRecordsSheet extends StatefulWidget {
+  final List<Map<String, dynamic>> branches;
+  final int? initialBranchId;
+  final List<WorkerAttendanceState> workers;
+  final VoidCallback onChanged;
+
+  const _DetailedAttendanceRecordsSheet({
+    required this.branches,
+    required this.initialBranchId,
+    required this.workers,
+    required this.onChanged,
+  });
+
+  @override
+  State<_DetailedAttendanceRecordsSheet> createState() => _DetailedAttendanceRecordsSheetState();
+}
+
+class _DetailedAttendanceRecordsSheetState extends State<_DetailedAttendanceRecordsSheet> {
+  bool _loading = true;
+  String? _error;
+  List<Map<String, dynamic>> _records = [];
+  List<Map<String, dynamic>> _branchEmployees = [];
+  int? _branchId;
+  String _statusFilter = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _branchId = widget.initialBranchId;
+    _loadEmployeesForSheet();
+    _loadRecords();
+  }
+
+  Future<void> _loadEmployeesForSheet() async {
+    try {
+      final api = context.read<ApiClient>();
+      final res = await api.get(
+        '/api/v1/hr/employees/',
+        queryParams: {
+          'is_active': 'true',
+          'page_size': '100',
+          if (_branchId != null) 'branch_id': '$_branchId',
+        },
+      );
+      if (res is Map<String, dynamic> && mounted) {
+        final raw = res['results'] as List<dynamic>? ?? [];
+        setState(() {
+          _branchEmployees = raw.whereType<Map<String, dynamic>>().toList();
+        });
+      }
+    } catch (_) {
+      if (mounted && _branchId == widget.initialBranchId) {
+        setState(() {
+          _branchEmployees = widget.workers
+              .map((w) => <String, dynamic>{'id': w.id, 'name': w.name})
+              .toList();
+        });
+      }
+    }
+  }
+
+  Future<void> _loadRecords() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final api = context.read<ApiClient>();
+      final params = <String, String>{
+        'page_size': '50',
+        if (_branchId != null) 'branch_id': '$_branchId',
+        if (_statusFilter.isNotEmpty) 'status': _statusFilter,
+      };
+      final res = await api.get('/api/v1/attendance/', queryParams: params);
+      if (res is Map<String, dynamic> && mounted) {
+        final raw = res['results'] as List<dynamic>? ?? [];
+        setState(() {
+          _records = raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = e.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _showSingleRecordDialog({Map<String, dynamic>? existing}) async {
+    if (_branchEmployees.isEmpty && existing == null) {
+      await _loadEmployeesForSheet();
+      if (!mounted) return;
+    }
+    final employees = _branchEmployees.isNotEmpty
+        ? _branchEmployees
+        : widget.workers
+            .map((w) => <String, dynamic>{'id': w.id, 'name': w.name})
+            .toList();
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => _SingleAttendanceRecordDialog(
+        api: context.read<ApiClient>(),
+        employees: employees,
+        existing: existing,
+      ),
+    );
+    if (saved == true && mounted) {
+      AppFeedback.showSuccess(
+        context,
+        existing == null ? 'تم تسجيل الحضور الفردي بنجاح' : 'تم تحديث سجل الحضور بنجاح',
+      );
+      _loadRecords();
+      widget.onChanged();
+    }
+  }
+
+  Future<void> _deleteRecord(Map<String, dynamic> rec) async {
+    final emp = rec['employee'] as Map<String, dynamic>?;
+    final empName = emp?['name']?.toString() ?? rec['employee_name']?.toString() ?? '';
+    final confirmed = await AppConfirmDialog.show(
+      context,
+      title: 'حذف سجل حضور',
+      message: 'هل تريد حذف سجل حضور "$empName" بتاريخ ${rec['date'] ?? ''} نهائياً؟',
+      confirmLabel: 'حذف',
+      isDestructive: true,
+    );
+    if (!confirmed || !mounted) return;
+
+    final api = context.read<ApiClient>();
+    try {
+      await api.delete('/api/v1/attendance/${rec['id']}/delete/');
+      if (!mounted) return;
+      AppFeedback.showSuccess(context, 'تم حذف سجل الحضور بنجاح');
+      _loadRecords();
+      widget.onChanged();
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.showError(context, 'تعذر الحذف: $e');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (ctx, scrollCtrl) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'سجل الحضور والانصراف التفصيلي',
+                    style: TextStyle(fontFamily: 'Cairo', fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () => _showSingleRecordDialog(),
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('سجل فردي', style: TextStyle(fontFamily: 'Cairo', fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (widget.branches.isNotEmpty)
+                  Expanded(
+                    child: DropdownButtonFormField<int?>(
+                      isExpanded: true,
+                      value: _branchId,
+                      decoration: const InputDecoration(labelText: 'الفرع', isDense: true),
+                      items: [
+                        const DropdownMenuItem<int?>(value: null, child: Text('كل الفروع', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
+                        ...widget.branches.map((b) => DropdownMenuItem<int?>(
+                              value: (b['id'] as num).toInt(),
+                              child: Text(b['name']?.toString() ?? '', overflow: TextOverflow.ellipsis, style: const TextStyle(fontFamily: 'Cairo', fontSize: 12)),
+                            )),
+                      ],
+                      onChanged: (v) {
+                        setState(() => _branchId = v);
+                        _loadEmployeesForSheet();
+                        _loadRecords();
+                      },
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    isExpanded: true,
+                    value: _statusFilter,
+                    decoration: const InputDecoration(labelText: 'الحالة', isDense: true),
+                    items: const [
+                      DropdownMenuItem(value: '', child: Text('الكل', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
+                      DropdownMenuItem(value: 'present', child: Text('حاضر', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
+                      DropdownMenuItem(value: 'absent', child: Text('غائب', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
+                      DropdownMenuItem(value: 'leave', child: Text('إجازة', style: TextStyle(fontFamily: 'Cairo', fontSize: 12))),
+                    ],
+                    onChanged: (v) {
+                      setState(() => _statusFilter = v ?? '');
+                      _loadRecords();
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Center(child: Text(_error!, style: const TextStyle(fontFamily: 'Cairo', color: AppColors.error)))
+                      : _records.isEmpty
+                          ? const Center(child: Text('لا توجد سجلات مطابقة.', style: TextStyle(fontFamily: 'Cairo', color: AppColors.textSecondary)))
+                          : ListView.separated(
+                              controller: scrollCtrl,
+                              itemCount: _records.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 8),
+                              itemBuilder: (c, i) {
+                                final r = _records[i];
+                                final emp = r['employee'] as Map<String, dynamic>?;
+                                final empName = emp?['name']?.toString() ?? r['employee_name']?.toString() ?? '';
+                                final st = r['status']?.toString() ?? 'present';
+                                return Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FAFC),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: AppColors.border),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text('$empName · ${r['date'] ?? ''}', style: const TextStyle(fontFamily: 'Cairo', fontWeight: FontWeight.bold, fontSize: 13)),
+                                            Text(
+                                              '${r['status_display'] ?? st} | عمل: ${r['work_hours'] ?? 0}س | إضافي: ${r['overtime_hours'] ?? 0}س | تأخير: ${r['delay_hours'] ?? 0}س',
+                                              style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textSecondary),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.primary),
+                                        onPressed: () => _showSingleRecordDialog(existing: r),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.error),
+                                        onPressed: () => _deleteRecord(r),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkerNoteDialog extends StatefulWidget {
+  final String workerName;
+  final String initialNote;
+
+  const _WorkerNoteDialog({
+    required this.workerName,
+    required this.initialNote,
+  });
+
+  @override
+  State<_WorkerNoteDialog> createState() => _WorkerNoteDialogState();
+}
+
+class _WorkerNoteDialogState extends State<_WorkerNoteDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.initialNote);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        'ملاحظة: ${widget.workerName}',
+        style: const TextStyle(
+          fontFamily: 'Cairo',
+          fontWeight: FontWeight.bold,
+          fontSize: 15,
+        ),
+      ),
+      content: TextField(
+        controller: _ctrl,
+        maxLines: 2,
+        decoration: const InputDecoration(
+          hintText: 'اكتب ملاحظة الحضور أو الانصراف...',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('إلغاء', style: TextStyle(fontFamily: 'Cairo')),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+          onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+          child: const Text('تثبيت', style: TextStyle(fontFamily: 'Cairo')),
+        ),
+      ],
+    );
+  }
+}
+
+class _SingleAttendanceRecordDialog extends StatefulWidget {
+  final ApiClient api;
+  final List<Map<String, dynamic>> employees;
+  final Map<String, dynamic>? existing;
+
+  const _SingleAttendanceRecordDialog({
+    required this.api,
+    required this.employees,
+    this.existing,
+  });
+
+  @override
+  State<_SingleAttendanceRecordDialog> createState() =>
+      _SingleAttendanceRecordDialogState();
+}
+
+class _SingleAttendanceRecordDialogState
+    extends State<_SingleAttendanceRecordDialog> {
+  int? _employeeId;
+  late String _status;
+  late final TextEditingController _dateCtrl;
+  late final TextEditingController _workCtrl;
+  late final TextEditingController _otCtrl;
+  late final TextEditingController _delayCtrl;
+  late final TextEditingController _checkInCtrl;
+  late final TextEditingController _checkOutCtrl;
+  late final TextEditingController _notesCtrl;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _employeeId = (e?['employee_id'] as num?)?.toInt() ??
+        (e?['employee'] as Map?)?['id'] as int? ??
+        (widget.employees.isNotEmpty
+            ? (widget.employees.first['id'] as num?)?.toInt()
+            : null);
+    _status = e?['status']?.toString() ?? 'present';
+    _dateCtrl = TextEditingController(
+      text: e?['date']?.toString() ??
+          DateTime.now().toIso8601String().split('T').first,
+    );
+    _workCtrl =
+        TextEditingController(text: e?['work_hours']?.toString() ?? '10');
+    _otCtrl =
+        TextEditingController(text: e?['overtime_hours']?.toString() ?? '0');
+    _delayCtrl =
+        TextEditingController(text: e?['delay_hours']?.toString() ?? '0');
+    _checkInCtrl =
+        TextEditingController(text: e?['check_in']?.toString() ?? '');
+    _checkOutCtrl =
+        TextEditingController(text: e?['check_out']?.toString() ?? '');
+    _notesCtrl = TextEditingController(text: e?['notes']?.toString() ?? '');
+  }
+
+  @override
+  void dispose() {
+    _dateCtrl.dispose();
+    _workCtrl.dispose();
+    _otCtrl.dispose();
+    _delayCtrl.dispose();
+    _checkInCtrl.dispose();
+    _checkOutCtrl.dispose();
+    _notesCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_employeeId == null) {
+      setState(() => _error = 'اختر الموظف أولاً.');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final work = double.tryParse(_workCtrl.text.trim()) ?? 10;
+      final ot = double.tryParse(_otCtrl.text.trim()) ?? 0;
+      final delay = double.tryParse(_delayCtrl.text.trim()) ?? 0;
+      final payload = <String, dynamic>{
+        'employee_id': _employeeId,
+        'date': _dateCtrl.text.trim(),
+        'status': _status,
+        'work_hours': _status == 'present' ? work : 0,
+        'overtime_hours': _status == 'present' ? ot : 0,
+        'delay_hours': _status == 'present' ? delay : 0,
+        if (_checkInCtrl.text.trim().isNotEmpty)
+          'check_in': _checkInCtrl.text.trim(),
+        if (_checkOutCtrl.text.trim().isNotEmpty)
+          'check_out': _checkOutCtrl.text.trim(),
+        'notes': _notesCtrl.text.trim(),
+      };
+      if (widget.existing == null) {
+        await widget.api.post('/api/v1/attendance/create/', body: payload);
+      } else {
+        await widget.api.put(
+          '/api/v1/attendance/${widget.existing!['id']}/update/',
+          body: payload,
+        );
+      }
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNew = widget.existing == null;
+    return AlertDialog(
+      title: Text(
+        isNew ? 'إضافة سجل حضور فردي' : 'تعديل سجل حضور #${widget.existing!['id']}',
+        style: const TextStyle(
+          fontFamily: 'Cairo',
+          fontWeight: FontWeight.bold,
+          fontSize: 15,
+        ),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_error != null) ...[
+              AppInlineError(message: _error!),
+              const SizedBox(height: 10),
+            ],
+            if (isNew && widget.employees.isNotEmpty) ...[
+              DropdownButtonFormField<int>(
+                isExpanded: true,
+                value: widget.employees
+                        .any((e) => (e['id'] as num?)?.toInt() == _employeeId)
+                    ? _employeeId
+                    : (widget.employees.first['id'] as num?)?.toInt(),
+                decoration: const InputDecoration(
+                  labelText: 'الموظف',
+                  isDense: true,
+                ),
+                items: widget.employees
+                    .map(
+                      (e) => DropdownMenuItem<int>(
+                        value: (e['id'] as num).toInt(),
+                        child: Text(
+                          e['name']?.toString() ?? '',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: 'Cairo',
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) => setState(() => _employeeId = v),
+              ),
+              const SizedBox(height: 10),
+            ],
+            TextField(
+              controller: _dateCtrl,
+              readOnly: true,
+              decoration: const InputDecoration(
+                labelText: 'التاريخ',
+                suffixIcon: Icon(Icons.calendar_today_rounded, size: 18),
+                isDense: true,
+              ),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate:
+                      DateTime.tryParse(_dateCtrl.text) ?? DateTime.now(),
+                  firstDate: DateTime(2023),
+                  lastDate: DateTime.now(),
+                );
+                if (picked != null) {
+                  setState(() {
+                    _dateCtrl.text =
+                        '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              value: _status,
+              decoration: const InputDecoration(
+                labelText: 'الحالة',
+                isDense: true,
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'present',
+                  child: Text('حاضر', style: TextStyle(fontFamily: 'Cairo')),
+                ),
+                DropdownMenuItem(
+                  value: 'absent',
+                  child: Text('غائب', style: TextStyle(fontFamily: 'Cairo')),
+                ),
+                DropdownMenuItem(
+                  value: 'leave',
+                  child: Text('إجازة', style: TextStyle(fontFamily: 'Cairo')),
+                ),
+              ],
+              onChanged: (v) => setState(() => _status = v ?? 'present'),
+            ),
+            if (_status == 'present') ...[
+              const SizedBox(height: 10),
+              AppNumericField(
+                controller: _workCtrl,
+                label: 'ساعات العمل',
+                unit: 'ساعة',
+                allowDecimal: true,
+                isDense: true,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppNumericField(
+                      controller: _otCtrl,
+                      label: 'إضافي',
+                      unit: 'س',
+                      allowDecimal: true,
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: AppNumericField(
+                      controller: _delayCtrl,
+                      label: 'تأخير',
+                      unit: 'س',
+                      allowDecimal: true,
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppTimeField(
+                      controller: _checkInCtrl,
+                      label: 'وقت الحضور',
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: AppTimeField(
+                      controller: _checkOutCtrl,
+                      label: 'وقت الانصراف',
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 10),
+            TextField(
+              controller: _notesCtrl,
+              decoration: const InputDecoration(
+                labelText: 'ملاحظات',
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('إلغاء', style: TextStyle(fontFamily: 'Cairo')),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+          onPressed: _saving ? null : _submit,
+          child: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Text('حفظ', style: TextStyle(fontFamily: 'Cairo')),
+        ),
+      ],
     );
   }
 }

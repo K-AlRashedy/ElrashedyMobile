@@ -17,6 +17,8 @@ class OrderProvider extends ChangeNotifier {
   final ApiClient _api;
   final _uuid = const Uuid();
   Timer? _searchDebounce;
+  ApiCancelToken? _catalogCancelToken;
+  int _catalogGeneration = 0;
 
   List<ProductModel> _allProducts = [];
   List<ProductModel> _topProducts = [];
@@ -90,13 +92,22 @@ class OrderProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setSearchQuery(String query) {
+  void setSearchQuery(String query, {bool immediate = false}) {
     _searchQuery = query;
     notifyListeners();
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
-      loadCatalog(query: query);
-    });
+    if (immediate) {
+      loadCatalog(refresh: true, query: query);
+    } else {
+      _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+        loadCatalog(refresh: true, query: query);
+      });
+    }
+  }
+
+  void clearSearch() {
+    if (_searchQuery.isEmpty) return;
+    setSearchQuery('', immediate: true);
   }
 
   void setBranches({BranchModel? from, BranchModel? to}) {
@@ -177,26 +188,42 @@ class OrderProvider extends ChangeNotifier {
   double getQuantityForProduct(int productId) => _cart[productId]?.quantity ?? 0;
 
   Future<void> loadCatalog({bool refresh = true, String? query}) async {
-    if (_isLoadingCatalog || _isLoadingMoreCatalog) return;
+    if (!refresh && (_isLoadingMoreCatalog || _isLoadingCatalog || !_catalogHasNext)) return;
+
     final effectiveQuery = (query ?? _searchQuery).trim();
     final page = refresh ? 1 : _catalogPage + 1;
+    final generation = refresh ? ++_catalogGeneration : _catalogGeneration;
+
     if (refresh) {
+      _catalogCancelToken?.cancel();
+      _catalogCancelToken = ApiCancelToken();
       _isLoadingCatalog = true;
     } else {
       _isLoadingMoreCatalog = true;
     }
+    final token = _catalogCancelToken;
     _errorMessage = null;
     notifyListeners();
+
     try {
-      final response = await _api.get('/api/v1/orders/catalog/', queryParams: {
-        'page': page,
-        if (effectiveQuery.isNotEmpty) 'q': effectiveQuery,
-      });
+      final response = await _api.get(
+        '/api/v1/orders/catalog/',
+        queryParams: {
+          'page': page,
+          if (effectiveQuery.isNotEmpty) 'q': effectiveQuery,
+        },
+        cancelToken: token,
+      );
+      if (generation != _catalogGeneration) return;
       final result = PageResult.fromResponse(response, 'products', ProductModel.fromJson);
       if (page == 1) {
         _allProducts = result.items;
       } else {
-        _allProducts = [..._allProducts, ...result.items];
+        final existingIds = _allProducts.map((e) => e.id).toSet();
+        _allProducts = [
+          ..._allProducts,
+          ...result.items.where((e) => !existingIds.contains(e.id)),
+        ];
       }
       _catalogPage = result.page;
       _catalogHasNext = result.hasNext;
@@ -206,12 +233,20 @@ class OrderProvider extends ChangeNotifier {
       }
       _categories = categories.toList(growable: false);
       if (!_categories.contains(_selectedCategory)) _selectedCategory = 'الكل';
+    } on ApiException catch (error) {
+      if (generation == _catalogGeneration && error.message != 'تم إلغاء الطلب.') {
+        _errorMessage = error.message;
+      }
     } catch (error) {
-      _errorMessage = error.toString();
+      if (generation == _catalogGeneration) {
+        _errorMessage = error.toString();
+      }
     } finally {
-      _isLoadingCatalog = false;
-      _isLoadingMoreCatalog = false;
-      notifyListeners();
+      if (generation == _catalogGeneration) {
+        _isLoadingCatalog = false;
+        _isLoadingMoreCatalog = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -232,7 +267,9 @@ class OrderProvider extends ChangeNotifier {
           .whereType<Map<String, dynamic>>()
           .map(BranchModel.fromJson)
           .toList(growable: false);
-      _selectedFromBranch ??= _userBranches.isEmpty ? null : _userBranches.first;
+      _selectedFromBranch ??= _userBranches.isEmpty
+          ? (_allBranches.isEmpty ? null : _allBranches.first)
+          : _userBranches.first;
       if (_allBranches.isNotEmpty) {
         _selectedToBranch ??= _allBranches.firstWhere(
           (branch) => branch.type == 'FACTORY' || branch.id != _selectedFromBranch?.id,
@@ -253,9 +290,15 @@ class OrderProvider extends ChangeNotifier {
     _topProductsError = null;
     notifyListeners();
     try {
+      final isTransfer = _orderType == 'transfer';
+      // In transfer mode, from_branch is dispensing and to_branch is requesting.
+      // Backend expects branch_id = dispensing branch, from_branch_id = requesting branch.
+      final dispensingId = isTransfer ? _selectedFromBranch?.id : _selectedToBranch?.id;
+      final requestingId = isTransfer ? _selectedToBranch?.id : _selectedFromBranch?.id;
+
       final response = await _api.get('/api/v1/orders/top-products/', queryParams: {
-        if (_selectedToBranch != null) 'branch_id': _selectedToBranch!.id,
-        if (_selectedFromBranch != null) 'from_branch_id': _selectedFromBranch!.id,
+        if (dispensingId != null) 'branch_id': dispensingId,
+        if (!isTransfer && requestingId != null) 'from_branch_id': requestingId,
       });
       if (response is! Map<String, dynamic>) throw const FormatException('بيانات الأصناف غير صالحة.');
       final raw = response['products'] as List<dynamic>? ?? const [];
@@ -280,6 +323,11 @@ class OrderProvider extends ChangeNotifier {
     }
     if (_selectedFromBranch == null || _selectedToBranch == null) {
       _errorMessage = 'يرجى تحديد الفرعين.';
+      notifyListeners();
+      return false;
+    }
+    if (_selectedFromBranch!.id == _selectedToBranch!.id) {
+      _errorMessage = 'يجب أن يكون الفرع الطالب مختلفاً عن الفرع المورد.';
       notifyListeners();
       return false;
     }
@@ -316,12 +364,14 @@ class OrderProvider extends ChangeNotifier {
   Future<void> loadOrdersList({
     String direction = 'all',
     String? status,
+    String? revStatus,
     int? branchId,
     bool includeLocked = false,
   }) async {
     _orderFilters = {
       'direction': direction,
       if (status != null && status.isNotEmpty) 'status': status,
+      if (revStatus != null && revStatus.isNotEmpty) 'rev_status': revStatus,
       if (branchId != null) 'branch_id': branchId,
       if (includeLocked) 'include_locked': true,
     };
@@ -344,6 +394,7 @@ class OrderProvider extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _catalogCancelToken?.cancel();
     ordersPagination.dispose();
     super.dispose();
   }

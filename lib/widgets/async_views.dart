@@ -11,19 +11,38 @@ class AppLoadingView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const CircularProgressIndicator(color: AppColors.primary),
-          if (message != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              message!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontFamily: 'Cairo', color: AppColors.textSecondary),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.primarySoft,
+                shape: BoxShape.circle,
+              ),
+              child: const SizedBox(
+                width: 30,
+                height: 30,
+                child: CircularProgressIndicator(strokeWidth: 3, color: AppColors.primary),
+              ),
             ),
+            if (message != null && message!.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(
+                message!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Cairo',
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -46,37 +65,46 @@ class AppErrorView extends StatelessWidget {
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                color: AppColors.danger.withValues(alpha: 0.08),
-                shape: BoxShape.circle,
+        child: Container(
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.dangerSoft,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 34, color: AppColors.danger),
               ),
-              child: Icon(icon, size: 36, color: AppColors.danger),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontFamily: 'Cairo',
-                fontSize: 14,
-                color: AppColors.textPrimary,
-                height: 1.6,
+              const SizedBox(height: 14),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Cairo',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                  height: 1.6,
+                ),
               ),
-            ),
-            if (onRetry != null) ...[
-              const SizedBox(height: 16),
-              OutlinedButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded, size: 18),
-                label: const Text('إعادة المحاولة', style: TextStyle(fontFamily: 'Cairo')),
-              ),
+              if (onRetry != null) ...[
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh_rounded, size: 19),
+                  label: const Text('إعادة المحاولة', style: TextStyle(fontFamily: 'Cairo')),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -109,7 +137,7 @@ class AppEmptyView extends StatelessWidget {
           children: [
             Container(
               padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.primaryLight,
                 shape: BoxShape.circle,
               ),
@@ -135,7 +163,7 @@ class AppEmptyView extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontFamily: 'Cairo',
-                  fontSize: 14,
+                  fontSize: 13.5,
                   color: AppColors.textSecondary,
                   height: 1.6,
                 ),
@@ -180,10 +208,11 @@ class AppStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -196,7 +225,7 @@ class AppStatusBadge extends StatelessWidget {
             label,
             style: TextStyle(
               fontFamily: 'Cairo',
-              fontSize: 11,
+              fontSize: 11.5,
               fontWeight: FontWeight.bold,
               color: color,
             ),
@@ -211,18 +240,20 @@ class AppDetailRow extends StatelessWidget {
   final String label;
   final String value;
   final IconData? icon;
+  final Color? valueColor;
 
   const AppDetailRow({
     super.key,
     required this.label,
     required this.value,
     this.icon,
+    this.valueColor,
   });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -236,7 +267,7 @@ class AppDetailRow extends StatelessWidget {
               label,
               style: const TextStyle(
                 fontFamily: 'Cairo',
-                fontSize: 12,
+                fontSize: 12.5,
                 color: AppColors.textSecondary,
               ),
             ),
@@ -247,11 +278,11 @@ class AppDetailRow extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.end,
-              style: const TextStyle(
+              style: TextStyle(
                 fontFamily: 'Cairo',
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w700,
+                color: valueColor ?? AppColors.textPrimary,
               ),
             ),
           ),
@@ -367,9 +398,9 @@ class _PagedListViewState<T> extends State<PagedListView<T>> {
         padding: EdgeInsets.all(20),
         child: Center(
           child: SizedBox(
-            width: 22,
-            height: 22,
-            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.primary),
           ),
         ),
       );
@@ -389,7 +420,7 @@ class _PagedListViewState<T> extends State<PagedListView<T>> {
         child: Text(
           'إجمالي السجلات: ${widget.controller.count}',
           textAlign: TextAlign.center,
-          style: const TextStyle(fontFamily: 'Cairo', fontSize: 11, color: AppColors.textMuted),
+          style: const TextStyle(fontFamily: 'Cairo', fontSize: 11.5, color: AppColors.textMuted),
         ),
       );
     }
